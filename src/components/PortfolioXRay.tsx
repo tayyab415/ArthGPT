@@ -1,45 +1,86 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ArrowUpRight, ArrowDownRight, Info, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, Info, AlertTriangle, CheckCircle2, Loader2, WifiOff, RefreshCw } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import type { UserProfile } from '../App';
 
-export function PortfolioXRay() {
+export function PortfolioXRay({ profile }: { profile: UserProfile }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchPortfolio = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Build fund list from profile investments
+      const mfInvestment = profile.investments.find(i => i.type === 'Mutual Funds');
+      const stockInvestment = profile.investments.find(i => i.type === 'Stocks');
+      
+      // If user has mutual fund data, use realistic distribution based on their corpus
+      const totalMfValue = (mfInvestment?.value || 0) + (stockInvestment?.value || 0);
+      
+      // Build a representative fund list — in production this comes from CAMS PDF parse
+      const funds = totalMfValue > 0 ? [
+        { name: 'Mirae Asset Large Cap Fund - Regular Plan', units: Math.round(totalMfValue * 0.35 / 85.2), nav: 85.2, investedAmount: Math.round(totalMfValue * 0.35) },
+        { name: 'HDFC Flexi Cap Fund - Regular Plan', units: Math.round(totalMfValue * 0.25 / 145.6), nav: 145.6, investedAmount: Math.round(totalMfValue * 0.25) },
+        { name: 'SBI Small Cap Fund - Direct Plan', units: Math.round(totalMfValue * 0.15 / 180.5), nav: 180.5, investedAmount: Math.round(totalMfValue * 0.15) },
+        { name: 'Parag Parikh Flexi Cap Fund - Direct Plan', units: Math.round(totalMfValue * 0.25 / 65.4), nav: 65.4, investedAmount: Math.round(totalMfValue * 0.25) }
+      ] : [
+        { name: 'Mirae Asset Large Cap Fund - Regular Plan', units: 3500, nav: 85.2, investedAmount: 250000 },
+        { name: 'HDFC Flexi Cap Fund - Regular Plan', units: 1200, nav: 145.6, investedAmount: 150000 },
+        { name: 'SBI Small Cap Fund - Direct Plan', units: 450, nav: 180.5, investedAmount: 60000 },
+        { name: 'Parag Parikh Flexi Cap Fund - Direct Plan', units: 2100, nav: 65.4, investedAmount: 120000 }
+      ];
+
+      const riskProfile = profile.goals.includes('Aggressive Growth') ? 'Aggressive' : profile.goals.includes('Retirement Corpus') ? 'Moderate' : 'Balanced';
+      const horizon = profile.age < 35 ? '20+ years' : profile.age < 45 ? '15 years' : '10 years';
+
+      const res = await fetch('/api/analyze-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ funds, riskProfile, investmentHorizon: horizon })
+      });
+
+      if (!res.ok) throw new Error(`Server error: ${res.status} ${res.statusText}`);
+
+      const json = await res.json();
+      if (!json || typeof json.trueXirr === 'undefined') throw new Error('Invalid response format from analysis engine');
+      setData(json);
+    } catch (e: any) {
+      console.error('Portfolio analysis failed:', e);
+      setError(e.message || 'Failed to analyse portfolio. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchPortfolio = async () => {
-      try {
-        const res = await fetch('/api/analyze-portfolio', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            funds: [
-              { name: 'Mirae Asset Large Cap Fund - Regular Plan', units: 3500, nav: 85.2, investedAmount: 250000 },
-              { name: 'HDFC Flexi Cap Fund - Regular Plan', units: 1200, nav: 145.6, investedAmount: 150000 },
-              { name: 'SBI Small Cap Fund - Direct Plan', units: 450, nav: 180.5, investedAmount: 60000 },
-              { name: 'Parag Parikh Flexi Cap Fund - Direct Plan', units: 2100, nav: 65.4, investedAmount: 120000 }
-            ],
-            riskProfile: 'Aggressive',
-            investmentHorizon: '15 years'
-          })
-        });
-        const json = await res.json();
-        setData(json);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchPortfolio();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!data && loading) {
+  if (loading) {
     return (
-      <div className="flex items-center justify-center h-96">
+      <div className="flex flex-col items-center justify-center h-96 space-y-4">
         <Loader2 className="w-8 h-8 text-gold-500 animate-spin" />
+        <p className="text-slate-400 text-sm">Analysing your portfolio with Gemini AI…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-96 space-y-4">
+        <WifiOff className="w-12 h-12 text-coral-500" />
+        <h3 className="text-xl font-semibold text-white">Analysis Failed</h3>
+        <p className="text-slate-400 text-center max-w-md">{error}</p>
+        <button
+          onClick={fetchPortfolio}
+          className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gold-500 text-navy-950 font-semibold hover:bg-gold-400 transition-colors"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Retry Analysis
+        </button>
       </div>
     );
   }

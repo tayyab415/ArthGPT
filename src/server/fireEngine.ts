@@ -5,6 +5,7 @@ export interface FireInput {
   existingMfCorpus: number;
   existingPpfCorpus: number;
   targetMonthlyDraw: number; // in today's money
+  declaredLifeCover?: number;
 }
 
 export interface FireResult {
@@ -19,28 +20,36 @@ export interface FireResult {
 }
 
 export function calculateFire(input: FireInput): FireResult {
-  const yearsToRetirement = Math.max(0, input.retireAge - input.age);
+  // Sanitise inputs
+  const age = Math.max(18, Math.min(80, Number(input.age) || 18));
+  const retireAge = Math.max(age + 1, Number(input.retireAge) || age + 10);
+  const income = Math.max(0, Number(input.income) || 0);
+  const existingMfCorpus = Math.max(0, Number(input.existingMfCorpus) || 0);
+  const existingPpfCorpus = Math.max(0, Number(input.existingPpfCorpus) || 0);
+  const targetMonthlyDraw = Math.max(1, Number(input.targetMonthlyDraw) || 50000);
+  const declaredLifeCover = Math.max(0, Number(input.declaredLifeCover) || 0);
+
+  const yearsToRetirement = retireAge - age; // guaranteed >= 1 from sanitisation
   const inflationRate = 0.06;
   const safeWithdrawalRate = 0.03;
   const equityReturn = 0.12;
   const ppfReturn = 0.071;
 
   // Step 1: Inflation-adjust the target
-  const inflationAdjustedMonthlyDraw = input.targetMonthlyDraw * Math.pow(1 + inflationRate, yearsToRetirement);
+  const inflationAdjustedMonthlyDraw = targetMonthlyDraw * Math.pow(1 + inflationRate, yearsToRetirement);
   
   // Step 2: Calculate required corpus
   const requiredAnnualDraw = inflationAdjustedMonthlyDraw * 12;
   const requiredCorpus = requiredAnnualDraw / safeWithdrawalRate;
 
   // Step 3: Credit existing corpus
-  const mfFutureValue = input.existingMfCorpus * Math.pow(1 + equityReturn, yearsToRetirement);
-  const ppfFutureValue = input.existingPpfCorpus * Math.pow(1 + ppfReturn, yearsToRetirement);
+  const mfFutureValue = existingMfCorpus * Math.pow(1 + equityReturn, yearsToRetirement);
+  const ppfFutureValue = existingPpfCorpus * Math.pow(1 + ppfReturn, yearsToRetirement);
   const existingCorpusFutureValue = mfFutureValue + ppfFutureValue;
 
   const gapToFill = Math.max(0, requiredCorpus - existingCorpusFutureValue);
 
   // Step 4: Back-calculate monthly SIP
-  // FV = P * [ (1+r)^n - 1 ] / r * (1+r)
   const months = yearsToRetirement * 12;
   const monthlyRate = equityReturn / 12;
   
@@ -49,9 +58,8 @@ export function calculateFire(input: FireInput): FireResult {
     requiredMonthlySip = gapToFill / ( (Math.pow(1 + monthlyRate, months) - 1) / monthlyRate * (1 + monthlyRate) );
   }
 
-  // Step 5: Insurance gap
-  const requiredLifeCover = input.income * 12; // 12x annual income
-  const declaredLifeCover = 5000000; // Mocked for now, should be input
+  // Step 5: Insurance gap (uses profile-provided life cover, no hardcoded fallback)
+  const requiredLifeCover = income * 12; // 12x annual income
   const insuranceGap = Math.max(0, requiredLifeCover - declaredLifeCover);
 
   // Glidepath
