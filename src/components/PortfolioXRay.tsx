@@ -73,9 +73,26 @@ interface PortfolioResult {
   }>;
 }
 
+// ── Tax-Aware Helpers ──
+const EQUITY_LTCG_RATE = 0.125; // 12.5% flat for equity held >1yr (Budget 2024)
+// Debt funds post-2023: taxed at slab rate (marginalRate), not 20% with indexation
+
+function isEquityFund(fundName: string): boolean {
+  const lower = fundName.toLowerCase();
+  return lower.includes('flexi') || lower.includes('large cap') || lower.includes('small cap') ||
+    lower.includes('mid cap') || lower.includes('equity') || lower.includes('multicap') ||
+    lower.includes('elss') || lower.includes('focused') || lower.includes('value');
+}
+
+function computePostTaxReturn(fundXirr: number, fundName: string, taxBracket: number): number {
+  const marginalRate = taxBracket / 100;
+  const effectiveRate = isEquityFund(fundName) ? EQUITY_LTCG_RATE : marginalRate;
+  return fundXirr * (1 - effectiveRate);
+}
+
 export function PortfolioXRay({ profile }: { profile: UserProfile }) {
   const [showExecutionLog, setShowExecutionLog] = useState(false);
-  const { portfolioPipeline } = useAnalysis();
+  const { portfolioPipeline, getCrossPipelineData } = useAnalysis();
   const { execute, events, result, error, isLoading, isComplete, isError, abort } = portfolioPipeline;
   const infographic = useInfographic();
 
@@ -122,6 +139,12 @@ export function PortfolioXRay({ profile }: { profile: UserProfile }) {
   const overlapConfidence = data.overlap_data?.confidence || 'HIGH';
   const totalValue = data.portfolio_data?.totalValue || 0;
   const fundCount = data.portfolio_data?.funds?.length || 4;
+  const fundXirrs = data.xirr_results?.fundXirrs ?? [];
+
+  // ── Cross-pipeline tax data ──
+  const crossData = getCrossPipelineData();
+  const taxBracket = crossData.taxBracket;
+  const hasTaxData = taxBracket !== undefined;
 
   const handleGenerateInfographic = useCallback(() => {
     infographic.generate('portfolio', {
@@ -274,6 +297,69 @@ export function PortfolioXRay({ profile }: { profile: UserProfile }) {
           </motion.div>
         ))}
       </div>
+
+      {/* ── Fund Returns (Post-Tax View) ── */}
+      {fundXirrs.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-white">Fund Returns</h3>
+            {hasTaxData && (
+              <span className="text-xs text-slate-500">
+                Tax bracket: {taxBracket}% &middot; Equity LTCG: 12.5% &middot; Debt: at slab
+              </span>
+            )}
+          </div>
+
+          {!hasTaxData && (
+            <div className="bg-gold-500/5 border border-gold-500/20 rounded-xl p-3 flex items-center gap-2">
+              <Info className="w-4 h-4 text-gold-500/60 shrink-0" />
+              <span className="text-gold-500/60 text-xs">
+                Run Tax Wizard to see post-tax returns
+              </span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {fundXirrs.map((f, i) => {
+              const postTax = hasTaxData ? computePostTaxReturn(f.xirr, f.fund, taxBracket!) : null;
+              const isPositive = f.xirr >= 0;
+              return (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  className="p-4 rounded-xl bg-navy-900 border border-navy-800 hover:border-navy-700 transition-colors"
+                >
+                  <p className="text-sm text-slate-400 mb-2 truncate" title={f.fund}>{f.fund}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-xl font-bold font-mono ${isPositive ? 'text-emerald-400' : 'text-coral-400'}`}>
+                      {f.xirr.toFixed(1)}%
+                    </span>
+                    <span className="text-xs text-slate-500">XIRR</span>
+                    {postTax !== null && (
+                      <span
+                        className={`ml-auto inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                          postTax >= 0
+                            ? 'bg-teal-500/10 text-teal-500'
+                            : 'bg-coral-500/10 text-coral-500'
+                        }`}
+                      >
+                        Post-tax: {postTax.toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                  {postTax !== null && (
+                    <p className="text-xs text-slate-500 mt-1.5">
+                      {isEquityFund(f.fund) ? 'Equity LTCG 12.5%' : `Debt at slab ${taxBracket}%`}
+                    </p>
+                  )}
+                </motion.div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Overlap Map with Confidence */}

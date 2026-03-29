@@ -1,6 +1,7 @@
 import { LlmAgent } from '../core/Agent';
 import { SessionState, type PortfolioSessionState, type PortfolioFund, type PortfolioData } from '../core/SessionState';
 import { extractPortfolioData } from '../utils/portfolioGemini';
+import { resolveFund } from '../utils/mfapi';
 
 /**
  * IngestionAgent — Stage 1
@@ -22,11 +23,11 @@ export class IngestionAgent extends LlmAgent<PortfolioSessionState> {
 
     console.log(`[Agent: ${this.name}] Parsing ${rawInput.funds.length} funds...`);
 
+    let portfolioData: PortfolioData;
+
     try {
       // Use Gemini to extract and standardize portfolio data
-      const portfolioData = await extractPortfolioData(rawInput);
-      
-      state.set('portfolio_data', portfolioData);
+      portfolioData = await extractPortfolioData(rawInput);
       console.log(`[Agent: ${this.name}] Extracted ${portfolioData.funds.length} funds. Total value: ₹${portfolioData.totalValue.toLocaleString('en-IN')}`);
     } catch (error) {
       // Fallback: Direct conversion without LLM
@@ -45,16 +46,58 @@ export class IngestionAgent extends LlmAgent<PortfolioSessionState> {
 
       const totalValue = funds.reduce((sum, f) => sum + f.currentValue, 0);
 
-      const portfolioData: PortfolioData = {
+      portfolioData = {
         funds,
         totalValue,
         riskProfile: rawInput.riskProfile,
         extractionConfidence: 'MEDIUM',
       };
 
-      state.set('portfolio_data', portfolioData);
       console.log(`[Agent: ${this.name}] Extracted ${funds.length} funds (fallback). Total value: ₹${totalValue.toLocaleString('en-IN')}`);
     }
+
+    // Enrich funds with real MFapi data
+    const enrichedData = await this.enrichWithMfapi(portfolioData);
+    state.set('portfolio_data', enrichedData);
+  }
+
+  /**
+   * Enrich portfolio funds with real NAV data from MFapi.in.
+   * Falls back to mock data (original values) when MFapi can't resolve a fund.
+   */
+  private async enrichWithMfapi(portfolioData: PortfolioData): Promise<PortfolioData> {
+    const enrichedFunds = await Promise.all(
+      portfolioData.funds.map(async (fund) => {
+        try {
+          const resolved = await resolveFund(fund.name);
+          if (resolved) {
+            console.log(`[Agent: ${this.name}] MFapi resolved "${fund.name}" → NAV ₹${resolved.latestNav}`);
+            return {
+              ...fund,
+              nav: resolved.latestNav,
+              currentValue: fund.units * resolved.latestNav,
+              amc: resolved.fundHouse,
+              isin: resolved.isin,
+              schemeCode: resolved.schemeCode,
+              dataSource: 'mfapi' as const,
+            };
+          }
+        } catch (err) {
+          console.warn(`[Agent: ${this.name}] MFapi enrichment failed for ${fund.name}:`, err);
+        }
+        return { ...fund, dataSource: 'mock' as const };
+      })
+    );
+
+    const enrichedTotalValue = enrichedFunds.reduce((sum, f) => sum + f.currentValue, 0);
+    const mfapiCount = enrichedFunds.filter(f => f.dataSource === 'mfapi').length;
+    console.log(`[Agent: ${this.name}] MFapi enrichment: ${mfapiCount}/${enrichedFunds.length} funds resolved. Total value: ₹${enrichedTotalValue.toLocaleString('en-IN')}`);
+
+    return {
+      ...portfolioData,
+      funds: enrichedFunds,
+      totalValue: enrichedTotalValue,
+    };
   }
 
   private inferCategory(fundName: string): PortfolioFund['category'] {

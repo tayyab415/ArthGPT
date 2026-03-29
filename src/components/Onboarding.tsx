@@ -1,6 +1,6 @@
 import { motion } from 'motion/react';
-import { ArrowRight, ArrowLeft, UploadCloud, CheckCircle2, IndianRupee, Briefcase, Home, GraduationCap, TrendingUp, ShieldCheck, AlertCircle, X, FileText, Lock, Info } from 'lucide-react';
-import { useState, useRef, type Dispatch, type SetStateAction, type DragEvent, type ChangeEvent } from 'react';
+import { ArrowRight, ArrowLeft, UploadCloud, CheckCircle2, IndianRupee, Briefcase, Home, GraduationCap, TrendingUp, ShieldCheck, AlertCircle, X, FileText, Lock, Info, Loader2, AlertTriangle, ChevronDown, ChevronUp, Zap, User, Landmark, Heart } from 'lucide-react';
+import { useState, useRef, useCallback, type Dispatch, type SetStateAction, type DragEvent, type ChangeEvent } from 'react';
 import { cn } from '../lib/utils';
 import type { UserProfile, UploadedDocument } from '../App';
 
@@ -53,6 +53,96 @@ function validateStep2(investments: { type: string; value: number }[]): Validati
   return errors;
 }
 
+// ───────── preset personas ─────────
+interface Persona {
+  id: string;
+  label: string;
+  tagline: string;
+  icon: typeof GraduationCap;
+  color: string; // tailwind accent
+  profile: Partial<UserProfile>;
+  investments: Record<string, number>; // type → value
+  goals: string[];
+}
+
+const PERSONAS: Persona[] = [
+  {
+    id: 'student',
+    label: 'Student / Intern',
+    tagline: '22 · Bengaluru · 4.5L',
+    icon: GraduationCap,
+    color: 'teal',
+    profile: {
+      age: 22, city: 'Bengaluru', income: 450000,
+      retireAge: 45, targetMonthlyExpense: 30000, monthlySipCurrent: 5000,
+      declaredLifeCover: 0, section80C: 0, section80CCD1B: 0, section80D: 0,
+      rentPaid: 12000, homeLoanInterest: 0,
+    },
+    investments: { 'Mutual Funds': 50000, 'Stocks': 25000 },
+    goals: ['wealth', 'tax'],
+  },
+  {
+    id: 'young_pro',
+    label: 'Young Professional',
+    tagline: '28 · Mumbai · 18L',
+    icon: Briefcase,
+    color: 'blue',
+    profile: {
+      age: 28, city: 'Mumbai', income: 1800000,
+      retireAge: 50, targetMonthlyExpense: 75000, monthlySipCurrent: 25000,
+      declaredLifeCover: 5000000, section80C: 150000, section80CCD1B: 50000, section80D: 25000,
+      rentPaid: 30000, homeLoanInterest: 0,
+    },
+    investments: { 'Mutual Funds': 800000, 'PPF': 300000, 'NPS': 200000, 'Stocks': 150000, 'EPF': 250000 },
+    goals: ['retire', 'home', 'wealth', 'tax'],
+  },
+  {
+    id: 'mid_career',
+    label: 'Mid-Career',
+    tagline: '35 · Delhi · 32L',
+    icon: TrendingUp,
+    color: 'gold',
+    profile: {
+      age: 35, city: 'Delhi', income: 3200000,
+      retireAge: 50, targetMonthlyExpense: 125000, monthlySipCurrent: 50000,
+      declaredLifeCover: 10000000, section80C: 150000, section80CCD1B: 50000, section80D: 50000,
+      rentPaid: 0, homeLoanInterest: 200000,
+    },
+    investments: { 'Mutual Funds': 2500000, 'PPF': 800000, 'NPS': 500000, 'Fixed Deposits': 1000000, 'Stocks': 600000, 'EPF': 900000, 'Real Estate': 5000000, 'Gold': 300000 },
+    goals: ['retire', 'child', 'wealth', 'tax'],
+  },
+  {
+    id: 'senior',
+    label: 'Senior Executive',
+    tagline: '48 · Pune · 55L',
+    icon: Landmark,
+    color: 'purple',
+    profile: {
+      age: 48, city: 'Pune', income: 5500000,
+      retireAge: 55, targetMonthlyExpense: 200000, monthlySipCurrent: 100000,
+      declaredLifeCover: 20000000, section80C: 150000, section80CCD1B: 50000, section80D: 75000,
+      rentPaid: 0, homeLoanInterest: 0,
+    },
+    investments: { 'Mutual Funds': 8000000, 'PPF': 1500000, 'NPS': 1000000, 'Fixed Deposits': 3000000, 'Stocks': 2000000, 'EPF': 3000000, 'Real Estate': 15000000, 'Gold': 1000000 },
+    goals: ['retire', 'child', 'tax'],
+  },
+  {
+    id: 'retiree',
+    label: 'Near-Retirement',
+    tagline: '58 · Chennai · 25L',
+    icon: Heart,
+    color: 'orange',
+    profile: {
+      age: 58, city: 'Chennai', income: 2500000,
+      retireAge: 60, targetMonthlyExpense: 100000, monthlySipCurrent: 30000,
+      declaredLifeCover: 15000000, section80C: 150000, section80CCD1B: 50000, section80D: 100000,
+      rentPaid: 0, homeLoanInterest: 0,
+    },
+    investments: { 'Mutual Funds': 5000000, 'PPF': 2000000, 'NPS': 1500000, 'Fixed Deposits': 5000000, 'EPF': 4000000, 'Gold': 500000 },
+    goals: ['retire', 'wealth', 'tax'],
+  },
+];
+
 // ───────── component ─────────
 export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uploadedDocs, setUploadedDocs }: OnboardingProps) {
   const [goals, setGoals] = useState<string[]>(profile.goals);
@@ -65,8 +155,34 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
   const [isDragging, setIsDragging] = useState(false);
   const [showDocHelp, setShowDocHelp] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [activePersona, setActivePersona] = useState<string | null>(null);
 
   const getError = (field: string) => errors.find(e => e.field === field)?.message;
+
+  // ── Apply a preset persona across all steps ──
+  const applyPersona = (persona: Persona) => {
+    const isDeselect = activePersona === persona.id;
+    setActivePersona(isDeselect ? null : persona.id);
+    if (isDeselect) return; // just deselect, keep current values
+
+    // Step 1: profile fields
+    setProfile(p => ({ ...p, ...persona.profile }));
+    setErrors([]);
+
+    // Step 2: investments
+    const invMap: Record<string, boolean> = {};
+    const valMap: Record<string, string> = {};
+    for (const [type, value] of Object.entries(persona.investments)) {
+      invMap[type] = true;
+      valMap[type] = formatIndianNumber(value);
+    }
+    setSelectedInvestments(invMap);
+    setInvestmentValues(valMap);
+
+    // Step 3: goals
+    setGoals(persona.goals);
+    setProfile(p => ({ ...p, goals: persona.goals }));
+  };
 
   // ── Step 1: validate & auto-detect metro ──
   const handleStep1Continue = () => {
@@ -150,6 +266,53 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
     return 'cams'; // default
   }
 
+  // Map frontend docType to backend DocumentType (only parsable types)
+  function mapToBackendType(docType: string): 'cas' | 'form16' | 'payslip' | null {
+    if (docType === 'cams') return 'cas';
+    if (docType === 'form16') return 'form16';
+    if (docType === 'payslip') return 'payslip';
+    return null; // bankstmt, demat, insurance not yet supported
+  }
+
+  const [expandedPreviews, setExpandedPreviews] = useState<Record<number, boolean>>({});
+
+  const parseDocument = useCallback(async (index: number) => {
+    const doc = uploadedDocs[index];
+    if (!doc) return;
+    const backendType = mapToBackendType(doc.docType);
+    if (!backendType) return; // unsupported type
+
+    // Set uploading status
+    setUploadedDocs(prev => prev.map((d, i) => i === index ? { ...d, parseStatus: 'uploading' as const, parseError: undefined } : d));
+
+    try {
+      const formData = new FormData();
+      formData.append('file', doc.file);
+      formData.append('type', backendType);
+
+      setUploadedDocs(prev => prev.map((d, i) => i === index ? { ...d, parseStatus: 'parsing' as const } : d));
+
+      const res = await fetch('/api/v2/parse-document', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: 'Server error' }));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+
+      const parsed = await res.json();
+      setUploadedDocs(prev => prev.map((d, i) => i === index ? { ...d, parseStatus: 'done' as const, parsedData: parsed } : d));
+    } catch (err) {
+      setUploadedDocs(prev => prev.map((d, i) => i === index ? {
+        ...d,
+        parseStatus: 'error' as const,
+        parseError: err instanceof Error ? err.message : 'Parsing failed',
+      } : d));
+    }
+  }, [uploadedDocs, setUploadedDocs]);
+
   const handleFileDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
@@ -202,7 +365,17 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
     setUploadedDocs(prev => prev.map((item, i) => i === index ? { ...item, docType: newType } : item));
   };
 
-  const handleUploadContinue = () => {
+  const handleUploadContinue = async () => {
+    // Find parsable docs that haven't been parsed yet
+    const parsableIndices = uploadedDocs
+      .map((doc, i) => ({ doc, i }))
+      .filter(({ doc }) => mapToBackendType(doc.docType) !== null && doc.parseStatus !== 'done');
+
+    if (parsableIndices.length > 0) {
+      // Parse all parsable docs in parallel
+      await Promise.all(parsableIndices.map(({ i }) => parseDocument(i)));
+    }
+
     nextStep();
   };
 
@@ -289,6 +462,48 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
           <div className="space-y-2">
             <h2 className="text-3xl font-semibold text-white">About you</h2>
             <p className="text-slate-400">Let's start with the basics.</p>
+          </div>
+
+          {/* ── Quick-fill persona chips ── */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-gold-500" />
+              <span className="text-sm font-medium text-gold-500">Quick fill — pick a profile</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {PERSONAS.map((persona) => {
+                const Icon = persona.icon;
+                const isActive = activePersona === persona.id;
+                return (
+                  <button
+                    key={persona.id}
+                    onClick={() => applyPersona(persona)}
+                    className={cn(
+                      "relative p-3 rounded-xl border text-left transition-all duration-200 group",
+                      isActive
+                        ? "border-gold-500 bg-gold-500/10 shadow-[0_0_20px_rgba(212,175,55,0.15)]"
+                        : "border-navy-700 bg-navy-900/80 hover:border-gold-500/40 hover:bg-navy-800/80"
+                    )}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <Icon className={cn("w-4 h-4 shrink-0", isActive ? "text-gold-500" : "text-slate-400 group-hover:text-slate-300")} />
+                      <span className={cn("text-xs font-semibold truncate", isActive ? "text-white" : "text-slate-300")}>{persona.label}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500">{persona.tagline}</p>
+                    {isActive && (
+                      <motion.div
+                        layoutId="persona-ring"
+                        className="absolute inset-0 rounded-xl border-2 border-gold-500 pointer-events-none"
+                        transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {activePersona && (
+              <p className="text-[10px] text-slate-600 text-center">Fields pre-filled — edit any value below. Investments and goals also set.</p>
+            )}
           </div>
           
           <div className="space-y-6">
@@ -380,6 +595,13 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
             <p className="text-slate-400">Select what you hold and enter approximate values.</p>
           </div>
 
+          {activePersona && (
+            <div className="flex items-center gap-2 p-3 rounded-xl bg-gold-500/5 border border-gold-500/20">
+              <Zap className="w-4 h-4 text-gold-500 shrink-0" />
+              <p className="text-xs text-slate-400">Pre-filled from <span className="text-gold-500 font-medium">{PERSONAS.find(p => p.id === activePersona)?.label}</span> profile. Edit or continue.</p>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             {['Mutual Funds', 'PPF', 'NPS', 'Fixed Deposits', 'Stocks', 'EPF', 'Real Estate', 'Gold'].map((item) => {
               const isSelected = selectedInvestments[item];
@@ -446,6 +668,13 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
             <h2 className="text-3xl font-semibold text-white">Your goals</h2>
             <p className="text-slate-400">Select all that apply. We'll customise your plan.</p>
           </div>
+
+          {activePersona && (
+            <div className="flex items-center gap-2 p-3 rounded-xl bg-gold-500/5 border border-gold-500/20">
+              <Zap className="w-4 h-4 text-gold-500 shrink-0" />
+              <p className="text-xs text-slate-400">Goals and retirement details pre-filled from <span className="text-gold-500 font-medium">{PERSONAS.find(p => p.id === activePersona)?.label}</span>. Edit or continue.</p>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             {[
@@ -646,32 +875,146 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
           {uploadedDocs.length > 0 && (
             <div className="space-y-3">
               <p className="text-sm font-medium text-slate-300">{uploadedDocs.length} document{uploadedDocs.length > 1 ? 's' : ''} uploaded</p>
-              {uploadedDocs.map((item, idx) => (
-                <div key={idx} className="p-4 rounded-2xl bg-navy-900 border border-teal-500/30 flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center shrink-0">
-                    <FileText className="w-5 h-5 text-teal-500" />
+              {uploadedDocs.map((item, idx) => {
+                const isParsable = mapToBackendType(item.docType) !== null;
+                return (
+                <div key={idx} className="rounded-2xl bg-navy-900 border border-teal-500/30 overflow-hidden">
+                  <div className="p-4 flex items-center gap-3">
+                    <div className={cn(
+                      "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
+                      item.parseStatus === 'done' ? "bg-teal-500/10" :
+                      item.parseStatus === 'error' ? "bg-coral-500/10" :
+                      "bg-teal-500/10"
+                    )}>
+                      {(item.parseStatus === 'uploading' || item.parseStatus === 'parsing') ? (
+                        <Loader2 className="w-5 h-5 text-gold-500 animate-spin" />
+                      ) : item.parseStatus === 'done' ? (
+                        <CheckCircle2 className="w-5 h-5 text-teal-500" />
+                      ) : item.parseStatus === 'error' ? (
+                        <AlertCircle className="w-5 h-5 text-coral-500" />
+                      ) : (
+                        <FileText className="w-5 h-5 text-teal-500" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-medium text-white text-sm truncate">{item.file.name}</h4>
+                      <div className="flex items-center gap-2">
+                        <p className="text-[10px] text-slate-400">{(item.file.size / 1024).toFixed(0)} KB</p>
+                        {item.parseStatus === 'uploading' && <p className="text-[10px] text-gold-500">Uploading...</p>}
+                        {item.parseStatus === 'parsing' && <p className="text-[10px] text-gold-500">AI parsing...</p>}
+                        {item.parseStatus === 'done' && item.parsedData && (
+                          <p className="text-[10px] text-teal-500">Parsed ({Math.round(item.parsedData.confidence * 100)}% confidence)</p>
+                        )}
+                        {item.parseStatus === 'error' && <p className="text-[10px] text-coral-500">{item.parseError || 'Failed'}</p>}
+                        {!isParsable && !item.parseStatus && (
+                          <p className="text-[10px] text-slate-500">AI parsing not yet available</p>
+                        )}
+                      </div>
+                    </div>
+                    <select
+                      value={item.docType}
+                      onChange={(e) => updateDocType(idx, e.target.value)}
+                      className="text-xs bg-navy-950 border border-navy-700 rounded-lg px-2 py-1.5 text-slate-300 focus:outline-none focus:ring-1 focus:ring-gold-500"
+                    >
+                      {DOCUMENT_TYPES.map((dt) => (
+                        <option key={dt.id} value={dt.id}>{dt.label}</option>
+                      ))}
+                    </select>
+                    {item.parseStatus === 'done' && item.parsedData && (
+                      <button
+                        onClick={() => setExpandedPreviews(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                        className="p-1.5 rounded-lg hover:bg-navy-800 transition-colors"
+                      >
+                        {expandedPreviews[idx] ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => removeUploadedFile(idx)}
+                      className="p-1.5 rounded-lg hover:bg-navy-800 transition-colors"
+                    >
+                      <X className="w-4 h-4 text-slate-400" />
+                    </button>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-white text-sm truncate">{item.file.name}</h4>
-                    <p className="text-[10px] text-slate-400">{(item.file.size / 1024).toFixed(0)} KB</p>
-                  </div>
-                  <select
-                    value={item.docType}
-                    onChange={(e) => updateDocType(idx, e.target.value)}
-                    className="text-xs bg-navy-950 border border-navy-700 rounded-lg px-2 py-1.5 text-slate-300 focus:outline-none focus:ring-1 focus:ring-gold-500"
-                  >
-                    {DOCUMENT_TYPES.map((dt) => (
-                      <option key={dt.id} value={dt.id}>{dt.label}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => removeUploadedFile(idx)}
-                    className="p-1.5 rounded-lg hover:bg-navy-800 transition-colors"
-                  >
-                    <X className="w-4 h-4 text-slate-400" />
-                  </button>
+
+                  {/* Low confidence warning */}
+                  {item.parseStatus === 'done' && item.parsedData && item.parsedData.confidence < 0.5 && (
+                    <div className="mx-4 mb-3 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                      <p className="text-[11px] text-amber-400">Low confidence extraction — please verify the data below</p>
+                    </div>
+                  )}
+
+                  {/* Parsed data preview (collapsible) */}
+                  {item.parseStatus === 'done' && item.parsedData && expandedPreviews[idx] && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="px-4 pb-4 border-t border-navy-800 pt-3"
+                    >
+                      {item.parsedData.type === 'cas' && (() => {
+                        const data = item.parsedData!.data as { investorName?: string; pan?: string; funds?: { fundName: string; currentValue: number }[] };
+                        return (
+                          <div className="space-y-2 text-xs">
+                            <p className="text-slate-300">
+                              <span className="text-slate-500">Investor:</span> {data.investorName || '—'}
+                              {data.pan && <span className="text-slate-500 ml-3">PAN: {data.pan}</span>}
+                            </p>
+                            <p className="text-teal-400 font-medium">Found {data.funds?.length || 0} fund{(data.funds?.length || 0) !== 1 ? 's' : ''}</p>
+                            {data.funds && data.funds.length > 0 && (
+                              <div className="space-y-1 max-h-32 overflow-y-auto">
+                                {data.funds.slice(0, 5).map((f, fi) => (
+                                  <div key={fi} className="flex justify-between text-[10px] py-1 border-b border-navy-800 last:border-0">
+                                    <span className="text-slate-400 truncate flex-1 mr-2">{f.fundName}</span>
+                                    <span className="text-white font-mono shrink-0">₹{formatIndianNumber(f.currentValue)}</span>
+                                  </div>
+                                ))}
+                                {data.funds.length > 5 && (
+                                  <p className="text-[10px] text-slate-500">+ {data.funds.length - 5} more funds</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      {item.parsedData.type === 'form16' && (() => {
+                        const data = item.parsedData!.data as { employerName?: string; assessmentYear?: string; grossSalary?: number; taxDeducted?: number };
+                        return (
+                          <div className="space-y-1.5 text-xs">
+                            {data.employerName && <p className="text-slate-300"><span className="text-slate-500">Employer:</span> {data.employerName}</p>}
+                            {data.assessmentYear && <p className="text-slate-300"><span className="text-slate-500">AY:</span> {data.assessmentYear}</p>}
+                            <div className="flex gap-4 mt-1">
+                              {data.grossSalary !== undefined && (
+                                <p className="text-teal-400 font-medium">Gross Salary: ₹{formatIndianNumber(data.grossSalary)}</p>
+                              )}
+                              {data.taxDeducted !== undefined && (
+                                <p className="text-gold-500 font-medium">TDS: ₹{formatIndianNumber(data.taxDeducted)}</p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {item.parsedData.type === 'payslip' && (() => {
+                        const data = item.parsedData!.data as { month?: string; netSalary?: number; grossSalary?: number };
+                        return (
+                          <div className="space-y-1.5 text-xs">
+                            {data.month && <p className="text-slate-300"><span className="text-slate-500">Month:</span> {data.month}</p>}
+                            <div className="flex gap-4 mt-1">
+                              {data.netSalary !== undefined && (
+                                <p className="text-teal-400 font-medium">Net Salary: ₹{formatIndianNumber(data.netSalary)}</p>
+                              )}
+                              {data.grossSalary !== undefined && (
+                                <p className="text-slate-300">Gross: ₹{formatIndianNumber(data.grossSalary)}</p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </motion.div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
 
               {showPasswordInput && (
                 <div className="p-4 rounded-xl bg-navy-900 border border-navy-700">
@@ -692,12 +1035,41 @@ export function Onboarding({ step, nextStep, prevStep, profile, setProfile, uplo
             </div>
           )}
 
-          <button
-            onClick={handleUploadContinue}
-            className="w-full py-4 bg-white text-navy-950 rounded-xl font-medium hover:bg-slate-100 transition-colors"
-          >
-            {uploadedDocs.length > 0 ? `Analyse ${uploadedDocs.length} document${uploadedDocs.length > 1 ? 's' : ''}` : 'Continue without upload'}
-          </button>
+          {(() => {
+            const parsableDocs = uploadedDocs.filter(d => mapToBackendType(d.docType) !== null);
+            const parsedCount = parsableDocs.filter(d => d.parseStatus === 'done').length;
+            const parsingInProgress = parsableDocs.some(d => d.parseStatus === 'uploading' || d.parseStatus === 'parsing');
+            const allParsed = parsableDocs.length > 0 && parsedCount === parsableDocs.length;
+
+            let buttonText: string;
+            if (uploadedDocs.length === 0) {
+              buttonText = 'Continue without upload';
+            } else if (parsingInProgress) {
+              buttonText = `Parsing... (${parsedCount}/${parsableDocs.length} done)`;
+            } else if (allParsed) {
+              buttonText = 'Continue with extracted data';
+            } else if (parsableDocs.length > 0) {
+              buttonText = `Parse & Analyse ${uploadedDocs.length} document${uploadedDocs.length > 1 ? 's' : ''}`;
+            } else {
+              buttonText = `Analyse ${uploadedDocs.length} document${uploadedDocs.length > 1 ? 's' : ''}`;
+            }
+
+            return (
+              <button
+                onClick={handleUploadContinue}
+                disabled={parsingInProgress}
+                className={cn(
+                  "w-full py-4 rounded-xl font-medium transition-colors",
+                  parsingInProgress
+                    ? "bg-navy-700 text-slate-400 cursor-not-allowed"
+                    : "bg-white text-navy-950 hover:bg-slate-100"
+                )}
+              >
+                {parsingInProgress && <Loader2 className="w-4 h-4 animate-spin inline mr-2" />}
+                {buttonText}
+              </button>
+            );
+          })()}
 
           {uploadedDocs.length === 0 && (
             <div className="text-center">

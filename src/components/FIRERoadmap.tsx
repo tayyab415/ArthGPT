@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertCircle, Info, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Info, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 import { useInfographic } from '../hooks/useInfographic';
 import { InfographicCard } from './InfographicCard';
+import { WhatIfPanel } from './WhatIfPanel';
 import {
   AreaChart,
   Area,
@@ -324,28 +325,56 @@ function GlidepathChart({ data }: { data: { age: number; equity: number; debt: n
 }
 
 export function FIRERoadmap({ profile }: { profile: UserProfile }) {
-  const { firePipeline: pipeline } = useAnalysis();
+  const { firePipeline: pipeline, getCrossPipelineData } = useAnalysis();
   const infographic = useInfographic();
 
+  // ── Cross-pipeline data for auto-populating FIRE inputs ──
+  const autoFilled = useMemo(() => {
+    const crossData = getCrossPipelineData();
+    return {
+      existingMfCorpus: !!(crossData.totalCorpus && crossData.totalCorpus > 0),
+      monthlySipCurrent: !!(crossData.taxableIncome && crossData.taxableIncome > 0),
+    };
+  }, [getCrossPipelineData]);
+
   const fireInput = useMemo(
-    () => ({
-      age: Math.max(18, Number(profile.age) || 0),
-      retireAge: Math.max((Number(profile.age) || 0) + 1, Number(profile.retireAge) || 0),
-      income: Math.max(0, Number(profile.income) || 0),
-      existingMfCorpus: profile.investments
+    () => {
+      const crossData = getCrossPipelineData();
+
+      const profileMfCorpus = profile.investments
         .filter((investment) => investment.type === 'Mutual Funds' || investment.type === 'Stocks')
-        .reduce((sum, investment) => sum + Number(investment.value || 0), 0),
-      existingPpfCorpus: profile.investments
-        .filter((investment) => investment.type === 'PPF' || investment.type === 'EPF')
-        .reduce((sum, investment) => sum + Number(investment.value || 0), 0),
-      targetMonthlyDraw:
-        profile.targetMonthlyExpense > 0
-          ? profile.targetMonthlyExpense
-          : Math.max(50000, Math.round((Number(profile.income) || 0) / 24)),
-      declaredLifeCover: Math.max(0, Number(profile.declaredLifeCover) || 0),
-      monthlySipCurrent: Math.max(0, Number(profile.monthlySipCurrent) || 0),
-    }),
-    [profile]
+        .reduce((sum, investment) => sum + Number(investment.value || 0), 0);
+
+      const existingMfCorpus =
+        crossData.totalCorpus && crossData.totalCorpus > 0
+          ? crossData.totalCorpus
+          : profileMfCorpus;
+
+      const profileSip = Math.max(0, Number(profile.monthlySipCurrent) || 0);
+      const monthlySipCurrent =
+        crossData.taxableIncome && crossData.taxableIncome > 0
+          ? Math.round(
+              (crossData.taxableIncome * (1 - (crossData.taxBracket ?? 30) / 100)) / 12 * 0.10
+            )
+          : profileSip;
+
+      return {
+        age: Math.max(18, Number(profile.age) || 0),
+        retireAge: Math.max((Number(profile.age) || 0) + 1, Number(profile.retireAge) || 0),
+        income: Math.max(0, Number(profile.income) || 0),
+        existingMfCorpus,
+        existingPpfCorpus: profile.investments
+          .filter((investment) => investment.type === 'PPF' || investment.type === 'EPF')
+          .reduce((sum, investment) => sum + Number(investment.value || 0), 0),
+        targetMonthlyDraw:
+          profile.targetMonthlyExpense > 0
+            ? profile.targetMonthlyExpense
+            : Math.max(50000, Math.round((Number(profile.income) || 0) / 24)),
+        declaredLifeCover: Math.max(0, Number(profile.declaredLifeCover) || 0),
+        monthlySipCurrent,
+      };
+    },
+    [profile, getCrossPipelineData]
   );
 
   useEffect(() => {
@@ -357,6 +386,21 @@ export function FIRERoadmap({ profile }: { profile: UserProfile }) {
 
   // ── Data extraction (safe for null result — normalizeFireResult handles null) ──
   const data = normalizeFireResult(pipeline.result);
+
+  // ── Map client-side FireInput to server-side shape for WhatIfPanel ──
+  const fireInputsServer = useMemo(
+    () => ({
+      currentAge: fireInput.age,
+      retirementAge: fireInput.retireAge,
+      yearsToRetirement: fireInput.retireAge - fireInput.age,
+      lifeExpectancyAge: 85,
+      currentMonthlySip: fireInput.monthlySipCurrent,
+      existingMfCorpus: fireInput.existingMfCorpus,
+      existingPpfCorpus: fireInput.existingPpfCorpus,
+      targetMonthlyDrawToday: fireInput.targetMonthlyDraw,
+    }),
+    [fireInput]
+  );
   const sources = data.sources;
   const actions = data.actions;
   const timeline = data.timeline;
@@ -461,6 +505,22 @@ export function FIRERoadmap({ profile }: { profile: UserProfile }) {
           </div>
         </header>
 
+        {/* ── Cross-pipeline enhancement banner ── */}
+        {(autoFilled.existingMfCorpus || autoFilled.monthlySipCurrent) && (
+          <div className="bg-teal-500/5 border border-teal-500/20 rounded-xl p-3 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-teal-500/60 shrink-0" />
+            <span className="text-teal-500/60 text-xs">
+              FIRE inputs enhanced with data from{' '}
+              {[
+                autoFilled.existingMfCorpus && 'Portfolio X-Ray',
+                autoFilled.monthlySipCurrent && 'Tax Wizard',
+              ]
+                .filter(Boolean)
+                .join(' and ')}
+            </span>
+          </div>
+        )}
+
         <div className="p-8 rounded-3xl bg-gradient-to-br from-navy-900 to-navy-800 border border-navy-700 text-center relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-gold-500 via-teal-500 to-coral-500" />
           <h3 className="text-4xl md:text-5xl font-bold text-white mb-4 leading-tight">
@@ -474,6 +534,16 @@ export function FIRERoadmap({ profile }: { profile: UserProfile }) {
             Monte Carlo target corpus: {fmtCurrency(data.targetCorpus)} | Macro snapshot: {data.macroAsOf || 'unavailable'} | Source mode: {data.macroSourceMode}
           </p>
         </div>
+
+        {/* What-If Builder — after hero, before metrics */}
+        <WhatIfPanel
+          fireInputs={fireInputsServer}
+          macroParameters={pipeline.result?.macro_parameters ?? null}
+          baselineSuccessProbability={data.successProbability}
+          baselineSip={data.medianSipRequired || fireInput.monthlySipCurrent}
+          baselineRetirementAge={fireInput.retireAge}
+          baselineMonthlyDraw={fireInput.targetMonthlyDraw}
+        />
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           <MetricCard
@@ -497,7 +567,14 @@ export function FIRERoadmap({ profile }: { profile: UserProfile }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
               <MiniTag label="Median SIP" value={fmtCurrency(data.medianSipRequired) + '/mo'} />
               <MiniTag label="Safety SIP" value={fmtCurrency(data.safetySipRequired) + '/mo'} />
-              <MiniTag label="Current SIP" value={fmtCurrency(fireInput.monthlySipCurrent) + '/mo'} />
+              <div className="relative">
+                <MiniTag label="Current SIP" value={fmtCurrency(fireInput.monthlySipCurrent) + '/mo'} />
+                {autoFilled.monthlySipCurrent && (
+                  <span className="absolute top-1.5 right-2 text-[9px] font-medium text-teal-500/70 bg-teal-500/10 px-1.5 py-0.5 rounded-full">
+                    via Tax Wizard
+                  </span>
+                )}
+              </div>
               <MiniTag label="Step-up" value={`${firstYearPlan.length ? 'Included' : 'Annual'} | check roadmap`} />
             </div>
 
@@ -651,7 +728,14 @@ export function FIRERoadmap({ profile }: { profile: UserProfile }) {
           <SectionCard title="Monte Carlo Summary" icon={<Loader2 className="w-4 h-4 text-slate-500" />}>
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <MiniTag label="Target corpus" value={fmtCurrency(data.targetCorpus)} />
+                <div className="relative">
+                  <MiniTag label="Target corpus" value={fmtCurrency(data.targetCorpus)} />
+                  {autoFilled.existingMfCorpus && (
+                    <span className="absolute top-1.5 right-2 text-[9px] font-medium text-teal-500/70 bg-teal-500/10 px-1.5 py-0.5 rounded-full">
+                      via Portfolio X-Ray
+                    </span>
+                  )}
+                </div>
                 <MiniTag label="P10 / P50 / P90" value={`${fmtCurrency(data.p10Corpus)} | ${fmtCurrency(data.p50Corpus)} | ${fmtCurrency(data.p90Corpus)}`} />
                 <MiniTag label="Source mode" value={data.macroSourceMode || 'unknown'} />
               </div>

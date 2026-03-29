@@ -326,6 +326,9 @@ export interface PortfolioFund {
   planType: 'Regular' | 'Direct';
   category: 'Large Cap' | 'Mid Cap' | 'Small Cap' | 'Flexi Cap' | 'Multi Cap' | 'Index' | 'Other';
   amc: string;
+  isin?: string;
+  schemeCode?: number;
+  dataSource?: 'mfapi' | 'mock';
 }
 
 // Cashflow for XIRR calculation
@@ -357,6 +360,7 @@ export interface OverlapData {
   }>;
   concentrationRisk: string;
   confidence: ConfidenceLevel;
+  amcConcentrationWarnings?: string[];
 }
 
 // Expense analysis (Stage 2C)

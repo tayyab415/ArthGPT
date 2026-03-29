@@ -31,6 +31,14 @@ export interface UserProfile {
 export interface UploadedDocument {
   file: File;
   docType: string;
+  parsedData?: {
+    type: 'cas' | 'form16' | 'payslip';
+    confidence: number;
+    data: unknown; // CasParsed | Form16Parsed | PayslipParsed at runtime
+    rawExtraction: string;
+  };
+  parseStatus?: 'idle' | 'uploading' | 'parsing' | 'done' | 'error';
+  parseError?: string;
 }
 
 const defaultProfile: UserProfile = {

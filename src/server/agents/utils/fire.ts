@@ -18,6 +18,7 @@ interface SimulationInputs {
   monthlySipOverride?: number;
   retirementAgeOverride?: number;
   targetMonthlyDrawOverride?: number;
+  equityAllocationOverride?: number;
 }
 
 interface SimulationRunOptions extends SimulationInputs {
@@ -187,6 +188,7 @@ export function runMonteCarlo(
     monthlySipOverride?: number;
     retirementAgeOverride?: number;
     targetMonthlyDrawOverride?: number;
+    equityAllocationOverride?: number;
   } = {},
 ): MonteCarloResults {
   const summary = runSimulationSummary({
@@ -197,6 +199,7 @@ export function runMonteCarlo(
     monthlySipOverride: options.monthlySipOverride,
     retirementAgeOverride: options.retirementAgeOverride,
     targetMonthlyDrawOverride: options.targetMonthlyDrawOverride,
+    equityAllocationOverride: options.equityAllocationOverride,
     includeFanChart: true,
   });
 
@@ -245,6 +248,7 @@ export function estimateSuccessProbability(
     monthlySipOverride?: number;
     retirementAgeOverride?: number;
     targetMonthlyDrawOverride?: number;
+    equityAllocationOverride?: number;
   } = {},
 ): number {
   return runSimulationSummary({
@@ -255,6 +259,7 @@ export function estimateSuccessProbability(
     monthlySipOverride: options.monthlySipOverride,
     retirementAgeOverride: options.retirementAgeOverride,
     targetMonthlyDrawOverride: options.targetMonthlyDrawOverride,
+    equityAllocationOverride: options.equityAllocationOverride,
     includeFanChart: false,
   }).successProbability;
 }
@@ -270,6 +275,10 @@ function runSimulationSummary(options: SimulationRunOptions): SimulationSummary 
     yearsToRetirement: retirementAge - options.fireInputs.currentAge,
     targetMonthlyDrawToday: options.targetMonthlyDrawOverride ?? options.fireInputs.targetMonthlyDrawToday,
   };
+
+  const clampedEquityOverride = options.equityAllocationOverride !== undefined
+    ? clamp(options.equityAllocationOverride, 0, 100)
+    : undefined;
 
   const iterations = Math.max(100, options.iterations ?? FIRE_DEFAULT_ITERATIONS);
   const seed = options.seed ?? FIRE_DEFAULT_SEED;
@@ -310,7 +319,9 @@ function runSimulationSummary(options: SimulationRunOptions): SimulationSummary 
         0.18,
       );
 
-      const allocation = getAllocationForAge(age, effectiveInputs);
+      const allocation = clampedEquityOverride !== undefined && age < effectiveInputs.retirementAge
+        ? { equity: clampedEquityOverride, debt: 100 - clampedEquityOverride }
+        : getAllocationForAge(age, effectiveInputs);
       const totalBeforeReturn = equityCorpus + debtCorpus;
       equityCorpus = totalBeforeReturn * (allocation.equity / 100);
       debtCorpus = totalBeforeReturn * (allocation.debt / 100);

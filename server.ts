@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,6 +9,9 @@ import { calculateFire } from './src/server/fireEngine';
 import { GoogleGenAI } from '@google/genai';
 import { FirePipeline, PortfolioPipeline, TaxPipeline, type AgentEvent } from './src/server/agents';
 import { generateFireInfographic, generatePortfolioInfographic, generateTaxInfographic } from './src/server/agents/utils/imageGen';
+import { runMonteCarlo } from './src/server/agents/utils/fire';
+import { parsePdfWithGemini, type DocumentType } from './src/server/agents/utils/pdfParser';
+import { orchestrate } from './src/server/agents/orchestrator/RootOrchestrator';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +21,12 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Multer for file upload handling (PDF parsing endpoint)
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  });
 
   // API Routes
   app.post('/api/analyze-portfolio', async (req, res) => {
@@ -473,6 +483,53 @@ async function startServer() {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // V2 What-If FIRE — Synchronous Monte Carlo for slider-driven what-if feedback
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * POST /api/v2/what-if/fire
+   *
+   * Accepts FIRE simulation override parameters and returns Monte Carlo results.
+   * Synchronous JSON endpoint (not SSE) — designed for fast what-if feedback
+   * from slider interactions (~50ms for 300 iterations).
+   *
+   * Request Body: { fireInputs, macroParameters, monthlySipOverride?, retirementAgeOverride?, targetMonthlyDrawOverride?, equityAllocationOverride? }
+   * Response: MonteCarloResults JSON
+   */
+  app.post('/api/v2/what-if/fire', (req, res) => {
+    try {
+      const {
+        fireInputs,
+        macroParameters,
+        monthlySipOverride,
+        retirementAgeOverride,
+        targetMonthlyDrawOverride,
+        equityAllocationOverride,
+      } = req.body || {};
+
+      if (!fireInputs || typeof fireInputs !== 'object') {
+        return res.status(400).json({ error: 'fireInputs object is required' });
+      }
+      if (!macroParameters || typeof macroParameters !== 'object') {
+        return res.status(400).json({ error: 'macroParameters object is required' });
+      }
+
+      const results = runMonteCarlo(fireInputs, macroParameters, {
+        monthlySipOverride,
+        retirementAgeOverride,
+        targetMonthlyDrawOverride,
+        equityAllocationOverride,
+        iterations: 300,
+      });
+
+      res.json(results);
+    } catch (e) {
+      console.error('What-if FIRE error:', e);
+      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // V2 Infographic Generation — Nano Banana 2 (gemini-3.1-flash-image-preview)
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -520,6 +577,65 @@ async function startServer() {
       alias: 'Nano Banana 2',
       capabilities: ['fire-infographic', 'portfolio-infographic', 'tax-infographic'],
     });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // V2 Document Parsing — Gemini Vision PDF extraction
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * POST /api/v2/parse-document
+   *
+   * Uploads a PDF (CAS statement, Form 16, or payslip) and extracts structured
+   * financial data using Gemini 2.5 Flash's vision capability.
+   *
+   * Request: multipart/form-data with 'file' (PDF) and 'type' (cas|form16|payslip)
+   * Response: ParsedDocument JSON
+   */
+  app.post('/api/v2/parse-document', upload.single('file'), async (req, res) => {
+    try {
+      const file = req.file;
+      const docType = req.body?.type as DocumentType;
+
+      if (!file) return res.status(400).json({ error: 'No file uploaded' });
+      if (!['cas', 'form16', 'payslip'].includes(docType)) {
+        return res.status(400).json({ error: 'Invalid document type. Must be cas, form16, or payslip' });
+      }
+      if (!file.mimetype.includes('pdf')) {
+        return res.status(400).json({ error: 'Only PDF files are supported' });
+      }
+
+      const result = await parsePdfWithGemini(file.buffer, docType);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: 'Document parsing failed', detail: String(err) });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // V2 Orchestrator — Intent classification + routing
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * POST /api/v2/orchestrate
+   *
+   * Accepts a natural language message, classifies the intent using Gemini Flash,
+   * and returns the target pipeline name with a friendly response message.
+   *
+   * Request Body: { message: string }
+   * Response: OrchestratorResponse JSON
+   */
+  app.post('/api/v2/orchestrate', async (req, res) => {
+    try {
+      const { message } = req.body;
+      if (!message || typeof message !== 'string') {
+        return res.status(400).json({ error: 'message (string) is required' });
+      }
+      const result = await orchestrate(message);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: 'Orchestration failed', detail: String(err) });
+    }
   });
 
   // Vite middleware for development

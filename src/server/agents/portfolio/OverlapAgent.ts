@@ -91,15 +91,31 @@ export class OverlapAgent extends LlmAgent<PortfolioSessionState> {
     const topOverlapWeight = overlaps.length > 0 ? overlaps[0].combinedWeight : 0;
     const concentrationRisk = this.assessConcentrationRisk(overlaps.length, topOverlapWeight);
 
+    // Check for same-AMC concentration
+    const amcCounts = new Map<string, string[]>();
+    for (const fund of portfolioData.funds) {
+      const amc = fund.amc || 'Unknown';
+      if (!amcCounts.has(amc)) amcCounts.set(amc, []);
+      amcCounts.get(amc)!.push(fund.name);
+    }
+
+    const amcWarnings: string[] = [];
+    for (const [amc, funds] of amcCounts) {
+      if (funds.length >= 2 && amc !== 'Unknown' && amc !== 'Unknown AMC') {
+        amcWarnings.push(`${amc}: ${funds.length} funds (${funds.join(', ')})`);
+      }
+    }
+
     const overlapData: OverlapData = {
       totalOverlappingStocks: overlaps.length,
       overlapMatrix: overlaps,
       concentrationRisk,
       confidence: overallConfidence,
+      amcConcentrationWarnings: amcWarnings.length > 0 ? amcWarnings : undefined,
     };
 
     state.set('overlap_data', overlapData);
-    console.log(`[Agent: ${this.name}] Found ${overlaps.length} overlapping stocks. Confidence: ${overallConfidence}`);
+    console.log(`[Agent: ${this.name}] Found ${overlaps.length} overlapping stocks. Confidence: ${overallConfidence}${amcWarnings.length > 0 ? `. AMC concentration warnings: ${amcWarnings.length}` : ''}`);
   }
 
   private capitalizeStock(stock: string): string {

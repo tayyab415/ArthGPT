@@ -145,6 +145,7 @@ export function TaxWizard({ profile, setProfile }: { profile: UserProfile; setPr
   const [slabOpen, setSlabOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [useAgentMode, setUseAgentMode] = useState(false);
+  const [npsWhatIf, setNpsWhatIf] = useState(false);
   const infographic = useInfographic();
 
   // Tax pipeline hook for multi-agent execution
@@ -171,6 +172,21 @@ export function TaxWizard({ profile, setProfile }: { profile: UserProfile; setPr
 
   // All calculation happens client-side (deterministic) — instant on every input change
   const data = useMemo(() => computeTax(taxInputs), [taxInputs]);
+
+  // NPS What-If: compute tax with full ₹50K NPS deduction under 80CCD(1B)
+  const npsData = useMemo(() => {
+    if (!npsWhatIf) return null;
+    return computeTax({
+      ...taxInputs,
+      section80CCD1B: 50000, // Max NPS deduction under 80CCD(1B)
+    });
+  }, [npsWhatIf, taxInputs]);
+
+  const npsSavings = useMemo(() => {
+    if (!data || !npsData) return 0;
+    // Only Old Regime benefits from 80CCD(1B); New Regime ignores it
+    return data.oldRegime.totalTaxLiability - npsData.oldRegime.totalTaxLiability;
+  }, [data, npsData]);
 
   // Extract AI-generated narrative from pipeline result
   const aiNarrative = useMemo(() => {
@@ -586,6 +602,56 @@ export function TaxWizard({ profile, setProfile }: { profile: UserProfile; setPr
               </p>
             </div>
           </div>
+
+          {/* NPS What-If Toggle */}
+          {data && data.missedDeductions.section80CCD1B > 0 && (
+            <div className="p-5 rounded-2xl bg-navy-900 border border-navy-800">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <PiggyBank className="w-5 h-5 text-gold-500" />
+                  <div>
+                    <h4 className="text-sm font-semibold text-white">NPS What-If</h4>
+                    <p className="text-xs text-slate-400">What if you invest ₹50,000 in NPS?</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setNpsWhatIf(prev => !prev)}
+                  className={cn(
+                    'relative w-12 h-6 rounded-full transition-colors',
+                    npsWhatIf ? 'bg-gold-500' : 'bg-navy-700'
+                  )}
+                >
+                  <span className={cn(
+                    'absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform',
+                    npsWhatIf ? 'translate-x-6' : 'translate-x-0.5'
+                  )} />
+                </button>
+              </div>
+
+              {/* Show savings when toggled on */}
+              <AnimatePresence>
+                {npsWhatIf && npsSavings > 0 && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-4 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                      <p className="text-sm text-emerald-400">
+                        You save <span className="font-bold text-lg">{fmtCurrency(npsSavings)}</span> in tax under Old Regime
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Section 80CCD(1B) allows an extra ₹50,000 deduction beyond the ₹1.5L limit of 80C.
+                        This deduction is only available under the Old Regime.
+                      </p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
 
           {/* Missed Deductions */}
           {(data.missedDeductions.section80D > 0 || data.missedDeductions.section80CCD1B > 0) && (
