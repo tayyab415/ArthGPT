@@ -260,11 +260,16 @@ npm install
 # 4. Add your Gemini API key
 echo "GEMINI_API_KEY=your_key_here" > .env.local
 
-# 5. Start the dev server (ensure env vars are loaded)
-export \$(cat .env.local | xargs) && npm run dev
+# 5. Start the dev server
+#    Uses Node's built-in --env-file flag (Node 22+) — no dotenv shell export needed
+npm run dev
 
 # -> http://localhost:3000
 \`\`\`
+
+> `npm run dev` resolves to `node --env-file=.env.local --import tsx server.ts`.
+> The `--env-file` flag loads `.env.local` natively into `process.env` before any module
+> is imported, so `GEMINI_API_KEY` is always available to all agent pipelines.
 
 > The app works without a Gemini API key — Portfolio X-Ray uses mock data, Tax Wizard is fully client-side, and FIRE engines run deterministic Monte Carlo. AI narratives, live macro search, and Nano Banana 2 infographics require the key.
 
@@ -287,6 +292,7 @@ ArthGPT/
 │   │   ├── PortfolioXRay.tsx          # MF analysis + expense charts + infographic
 │   │   ├── FIRERoadmap.tsx            # Monte Carlo fan chart + glidepath + infographic
 │   │   ├── TaxWizard.tsx              # Tax engine + visual comparison + infographic
+│   │   ├── ErrorBoundary.tsx          # Class-based error boundary — catches render crashes per tab
 │   │   ├── InfographicCard.tsx        # Reusable Nano Banana 2 image display component
 │   │   ├── AgentExecutionLog.tsx      # Real-time agent trace display
 │   │   └── ConfidenceBadge.tsx        # HIGH/MEDIUM/LOW confidence UI
@@ -399,6 +405,58 @@ Returns base64 PNG → InfographicCard renders inline with download option
 | ET revenue potential | ₹800 Cr/yr | 2Cr MAU x ₹400/user (ads + affiliate) |
 | Aggregate tax savings enabled | ₹9,000 Cr | 50L users x ₹30K avg missed deductions |
 | Infrastructure cost | < $70 total | Well within $5,000 GCP credits |
+
+---
+
+## Changelog
+
+### v1.1.0 — March 2026 (post-hackathon stability fixes)
+
+#### 🐛 Bug Fixes
+
+**Blank screen after pipeline completes (critical)**
+- **Root cause:** React Rules of Hooks violation in `PortfolioXRay` and `FIRERoadmap`.
+  Both components had `useCallback(handleGenerateInfographic)` declared *after* early
+  `return` statements (`isLoading`, `isError`, `!isComplete`). On the first render React
+  counted N hooks; after the pipeline completed it counted N+1 hooks — crashing with
+  *"Rendered more hooks than during the previous render"*.
+- **Fix:** Moved all data extraction (`const data = ...`) and `useCallback` declarations
+  **above** every early return. Both are now null-safe via optional chaining (`?.`) and
+  `?? {}` defaults so they run unconditionally on every render.
+
+**SSE buffer not flushing on stream close**
+- `useSSE.ts` `consumeStream()` was not processing the remaining buffer when the readable
+  stream ended, causing the last `pipeline_complete` event to be dropped.
+- **Fix:** Added explicit buffer flush on stream close and `.replace(/\r$/, '')` CRLF
+  stripping so SSE lines parse correctly on all platforms.
+
+**API key not available to agent pipelines**
+- `server.ts` imports `'dotenv/config'` but the shell `export $(cat .env.local | xargs)`
+  workaround was fragile and failed in VS Code integrated terminals.
+- **Fix:** `npm run dev` now runs `node --env-file=.env.local --import tsx server.ts`.
+  Node 22's native `--env-file` flag loads `.env.local` before any module executes, making
+  `GEMINI_API_KEY` reliably available to all agent pipelines.
+
+**Stale Vite transform cache**
+- A stale `node_modules/.vite` cache was serving old JS bundles, masking fixes.
+- **Fix:** Cache cleared (`rm -rf node_modules/.vite`); Vite now rebuilds fresh on startup.
+
+#### ✨ New
+
+**ErrorBoundary component** (`src/components/ErrorBoundary.tsx`)
+- Class-based React error boundary that catches synchronous render errors.
+- Displays the error message, first 6 lines of stack trace, and a "Try Again" button
+  that resets the boundary without a full page reload.
+- Wired at two levels: `App.tsx` wraps the entire `Dashboard`, and `Dashboard.tsx` wraps
+  each tab (`Portfolio X-Ray`, `FIRE Roadmap`, `Tax Wizard`) individually so a crash in
+  one tab never blanks the others.
+- Uses `(this as unknown as { state: State })` cast pattern to work with
+  `"useDefineForClassFields": false` in `tsconfig.json`.
+
+**Global JS error overlay** (`index.html`)
+- `window.addEventListener('error', ...)` + `window.addEventListener('unhandledrejection', ...)`
+  overlay renders unhandled JS errors visibly in the browser during development, replacing
+  the silent blank-screen failure mode.
 
 ---
 
