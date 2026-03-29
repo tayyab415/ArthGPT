@@ -1,336 +1,541 @@
-import { useState, useMemo } from 'react';
-import { motion } from 'motion/react';
-import { LineChart, Line, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import { ShieldAlert, Info, Loader2, AlertCircle } from 'lucide-react';
+import { useEffect, useMemo, type ReactNode } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { AlertCircle, Info, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { Loading, type LoadingPipelineConfig } from './Loading';
 import type { UserProfile } from '../App';
+import {
+  useFirePipeline,
+  type FirePipelineResult,
+  type FireSummary,
+  type MonteCarloResults,
+  type SipPlan,
+  type InsuranceGaps,
+  type FireRoadmap,
+  type FireMacroParameters,
+  type FireMacroSource,
+  type FireRoadmapAction,
+  type FireRoadmapTimelineItem,
+} from '../hooks/useSSE';
 
 function fmtCurrency(val: number) {
-  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(val);
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0,
+  }).format(val || 0);
 }
 
-// Client-side FIRE calculations for instant reactivity on slider changes
-function calculateFireClientSide(
-  age: number, retireAge: number, income: number,
-  existingMfCorpus: number, existingPpfCorpus: number,
-  targetMonthlyDraw: number, declaredLifeCover: number,
-  monthlySipCurrent: number
-) {
-  const yearsToRetirement = Math.max(1, retireAge - age);
-  const inflationRate = 0.06;
-  const safeWithdrawalRate = 0.03;
-  const equityReturn = 0.12;
-  const ppfReturn = 0.071;
+function fmtPercent(value: number | undefined) {
+  const numeric = Number(value || 0);
+  const percent = numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric;
+  return `${percent.toFixed(percent >= 100 || Number.isInteger(percent) ? 0 : 1)}%`;
+}
 
-  const inflationAdjustedMonthlyDraw = targetMonthlyDraw * Math.pow(1 + inflationRate, yearsToRetirement);
-  const requiredAnnualDraw = inflationAdjustedMonthlyDraw * 12;
-  const requiredCorpus = requiredAnnualDraw / safeWithdrawalRate;
+function toNumber(value: unknown): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
 
-  const mfFutureValue = existingMfCorpus * Math.pow(1 + equityReturn, yearsToRetirement);
-  const ppfFutureValue = existingPpfCorpus * Math.pow(1 + ppfReturn, yearsToRetirement);
-  const existingCorpusFutureValue = mfFutureValue + ppfFutureValue;
+function timelineFromActions(actions: FireRoadmapAction[] = []): FireRoadmapTimelineItem[] {
+  return actions.map((action) => ({
+    title: action.title,
+    detail: action.detail || action.impact,
+    milestone: action.timeframe,
+  }));
+}
 
-  const gapToFill = Math.max(0, requiredCorpus - existingCorpusFutureValue);
+function normalizeFireResult(result: FirePipelineResult | null) {
+  const summary = (result?.fire_summary ?? {}) as Partial<FireSummary>;
+  const monte = (result?.monte_carlo_results ?? {}) as Partial<MonteCarloResults>;
+  const sip = (result?.sip_plan ?? {}) as Partial<SipPlan>;
+  const insurance = (result?.insurance_gaps ?? {}) as Partial<InsuranceGaps>;
+  const roadmap = (result?.fire_roadmap ?? {}) as Partial<FireRoadmap>;
+  const macro = (result?.macro_parameters ?? {}) as Partial<FireMacroParameters>;
 
-  const months = yearsToRetirement * 12;
-  const monthlyRate = equityReturn / 12;
-
-  let requiredMonthlySip = 0;
-  if (gapToFill > 0 && months > 0) {
-    requiredMonthlySip = gapToFill / ((Math.pow(1 + monthlyRate, months) - 1) / monthlyRate * (1 + monthlyRate));
-  }
-
-  const requiredLifeCover = income * 12;
-  const insuranceGap = Math.max(0, requiredLifeCover - declaredLifeCover);
-
-  const currentYear = new Date().getFullYear();
-  const glidepath = [];
-  const step = Math.max(1, Math.floor(yearsToRetirement / 6));
-  for (let i = 0; i <= yearsToRetirement; i += step) {
-    const year = currentYear + i;
-    const remainingYears = yearsToRetirement - i;
-    let equity = 75, debt = 25;
-    if (remainingYears <= 5) { equity = 40; debt = 60; }
-    else if (remainingYears <= 10) { equity = 60; debt = 40; }
-    else if (remainingYears <= 15) { equity = 70; debt = 30; }
-    glidepath.push({ year, equity, debt });
-  }
+  const percentiles = monte.retirementCorpusPercentiles ?? { p10: 0, p50: 0, p90: 0 };
+  const sources: FireMacroSource[] = macro.sources ?? [];
+  const actions = roadmap.recommendedActions ?? [];
+  const timeline = roadmap.timeline ?? timelineFromActions(actions);
 
   return {
-    inflationAdjustedTarget: inflationAdjustedMonthlyDraw,
-    requiredCorpus,
-    existingCorpusFutureValue,
-    gapToFill,
-    requiredMonthlySip,
-    insuranceGap,
-    monthlySipCurrent,
-    glidepath,
-    sipAllocation: [
-      { category: 'Large Cap', percentage: 60, amount: requiredMonthlySip * 0.6 },
-      { category: 'Mid/Small Cap', percentage: 25, amount: requiredMonthlySip * 0.25 },
-      { category: 'Debt', percentage: 15, amount: requiredMonthlySip * 0.15 },
-    ],
+    successProbability: toNumber(summary.successProbability ?? monte.successProbability),
+    p10Corpus: toNumber(summary.p10Corpus ?? percentiles.p10),
+    p50Corpus: toNumber(summary.p50Corpus ?? percentiles.p50),
+    p90Corpus: toNumber(summary.p90Corpus ?? percentiles.p90),
+    medianSipRequired: toNumber(summary.medianSipRequired ?? sip.medianSipRequired),
+    safetySipRequired: toNumber(summary.safetySipRequired ?? sip.safetySipRequired),
+    insuranceGap: toNumber(summary.insuranceGap ?? insurance.lifeCoverGap),
+    requiredLifeCover: toNumber(insurance.requiredLifeCover),
+    declaredLifeCover: toNumber(insurance.declaredLifeCover),
+    recommendedHealthCover: toNumber(insurance.recommendedHealthCover),
+    macroAsOf: String(summary.macroAsOf ?? macro.asOf ?? ''),
+    macroSourceMode: String(summary.macroSourceMode ?? macro.sourceMode ?? 'unknown'),
+    roadmapHeadline: String(summary.roadmapHeadline ?? roadmap.headline ?? 'FIRE roadmap'),
+    probabilityInterpretation: String(summary.probabilityInterpretation ?? roadmap.probabilityInterpretation ?? ''),
+    narrative: String(result?.compliant_narrative ?? summary.narrative ?? roadmap.narrative ?? ''),
+    disclaimer: String(roadmap.disclaimer ?? 'Monte Carlo simulations express probabilities, not guarantees.'),
+    iterations: toNumber(monte.iterations),
+    seed: toNumber(monte.seed),
+    targetCorpusAtRetirement: toNumber(monte.targetCorpusAtRetirement ?? percentiles.p50),
+    shortfallAnalysis: monte.shortfallAnalysis,
+    fanChartData: monte.fanChartData ?? [],
+    sources,
+    actions,
+    timeline,
+    firstYearMonthlyPlan: sip.firstYearMonthlyPlan ?? [],
+    glidepath: sip.glidepath ?? [],
+    targetCorpus: toNumber(monte.targetCorpusAtRetirement ?? percentiles.p50),
   };
 }
 
+const FIRE_LOADING_CONFIG: LoadingPipelineConfig = {
+  title: 'Building your FIRE roadmap',
+  subtitle: 'Nested agents are simulating retirement outcomes from your inputs and live macro assumptions.',
+  traceLabel: 'GoalProfiler -> MacroAgent -> MonteCarlo -> SIP Glidepath -> Insurance Gap -> Roadmap -> Compliance',
+  steps: [
+    {
+      id: 'goal',
+      text: 'Normalizing FIRE inputs...',
+      agent: 'GoalProfiler • Deterministic',
+      stage: 1,
+      agentMatches: ['GoalProfiler'],
+    },
+    {
+      id: 'macro',
+      text: 'Fetching macro assumptions...',
+      agent: 'MacroAgent • Gemini Flash + Search',
+      stage: 1,
+      agentMatches: ['MacroAgent'],
+    },
+    {
+      id: 'monte-carlo',
+      text: 'Running Monte Carlo simulations...',
+      agent: 'MonteCarloEngine • Deterministic',
+      stage: 2,
+      agentMatches: ['MonteCarloEngine'],
+    },
+    {
+      id: 'sip',
+      text: 'Solving SIP glidepath...',
+      agent: 'SipGlidepathEngine • Deterministic',
+      stage: 2,
+      agentMatches: ['SipGlidepathEngine'],
+    },
+    {
+      id: 'insurance',
+      text: 'Estimating insurance gaps...',
+      agent: 'InsuranceGapAgent • Deterministic',
+      stage: 2,
+      agentMatches: ['InsuranceGapAgent'],
+    },
+    {
+      id: 'roadmap',
+      text: 'Interpreting probability distribution...',
+      agent: 'RoadmapBuilder • Gemini Pro',
+      stage: 3,
+      agentMatches: ['RoadmapBuilder'],
+    },
+    {
+      id: 'compliance',
+      text: 'Checking probability framing...',
+      agent: 'ComplianceChecker • Gemini Flash',
+      stage: 4,
+      agentMatches: ['ComplianceChecker'],
+    },
+    {
+      id: 'disclaimer',
+      text: 'Injecting compliance disclaimer...',
+      agent: 'DisclaimerInjector • Gemini Flash',
+      stage: 4,
+      agentMatches: ['DisclaimerInjector'],
+    },
+  ],
+  footer: 'Live probabilistic execution trace • Streaming via SSE',
+};
+
+function MetricCard({
+  label,
+  value,
+  subtext,
+  positive = true,
+}: {
+  label: string;
+  value: string;
+  subtext?: string;
+  positive?: boolean;
+}) {
+  return (
+    <div className="p-6 rounded-2xl bg-navy-900 border border-navy-800">
+      <p className="text-sm font-medium text-slate-400 mb-2">{label}</p>
+      <div className="flex items-baseline gap-2">
+        <span className="text-3xl font-bold text-white font-mono">{value}</span>
+      </div>
+      {subtext && (
+        <p className={`mt-3 text-sm font-medium ${positive ? 'text-emerald-500' : 'text-coral-500'}`}>
+          {subtext}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SectionCard({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="p-6 rounded-2xl bg-navy-900 border border-navy-800">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-2">
+          <h3 className="text-lg font-semibold text-white">{title}</h3>
+          {icon}
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function MiniTag({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-navy-950/70 border border-navy-800 px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="text-sm text-white font-medium mt-1">{value}</p>
+    </div>
+  );
+}
+
 export function FIRERoadmap({ profile }: { profile: UserProfile }) {
-  // Dynamic slider bounds based on user's age
-  const sliderMin = Math.max(profile.age + 1, 35);
-  const sliderMax = Math.max(sliderMin + 5, 70);
-  const initialRetireAge = Math.min(Math.max(profile.retireAge || 50, sliderMin), sliderMax);
-  const [retireAge, setRetireAge] = useState(initialRetireAge);
+  const pipeline = useFirePipeline();
 
-  // Pull real investment values from profile
-  const mfCorpus = profile.investments
-    .filter(i => i.type === 'Mutual Funds' || i.type === 'Stocks')
-    .reduce((sum, i) => sum + i.value, 0);
-  const ppfCorpus = profile.investments
-    .filter(i => i.type === 'PPF' || i.type === 'EPF')
-    .reduce((sum, i) => sum + i.value, 0);
+  const fireInput = useMemo(
+    () => ({
+      age: Math.max(18, Number(profile.age) || 0),
+      retireAge: Math.max((Number(profile.age) || 0) + 1, Number(profile.retireAge) || 0),
+      income: Math.max(0, Number(profile.income) || 0),
+      existingMfCorpus: profile.investments
+        .filter((investment) => investment.type === 'Mutual Funds' || investment.type === 'Stocks')
+        .reduce((sum, investment) => sum + Number(investment.value || 0), 0),
+      existingPpfCorpus: profile.investments
+        .filter((investment) => investment.type === 'PPF' || investment.type === 'EPF')
+        .reduce((sum, investment) => sum + Number(investment.value || 0), 0),
+      targetMonthlyDraw:
+        profile.targetMonthlyExpense > 0
+          ? profile.targetMonthlyExpense
+          : Math.max(50000, Math.round((Number(profile.income) || 0) / 24)),
+      declaredLifeCover: Math.max(0, Number(profile.declaredLifeCover) || 0),
+      monthlySipCurrent: Math.max(0, Number(profile.monthlySipCurrent) || 0),
+    }),
+    [profile]
+  );
 
-  // Use profile FIRE fields with sensible defaults
-  const targetMonthlyDraw = profile.targetMonthlyExpense > 0
-    ? profile.targetMonthlyExpense
-    : Math.max(50000, Math.round(profile.income / 24)); // Default: ~50% of monthly income
-  const declaredLifeCover = profile.declaredLifeCover || 0;
-  const monthlySipCurrent = profile.monthlySipCurrent || 0;
+  useEffect(() => {
+    if (fireInput.income <= 0 || pipeline.result || pipeline.isLoading) return;
 
-  // All calculations happen client-side for instant reactivity
-  const data = useMemo(() => calculateFireClientSide(
-    profile.age, retireAge, profile.income, mfCorpus, ppfCorpus,
-    targetMonthlyDraw, declaredLifeCover, monthlySipCurrent
-  ), [profile.age, retireAge, profile.income, mfCorpus, ppfCorpus, targetMonthlyDraw, declaredLifeCover, monthlySipCurrent]);
+    void pipeline.execute(fireInput);
+    // Removed abort on unmount to allow background processing
+  }, [fireInput]);
 
-  // Edge case: no income
   if (profile.income <= 0) {
     return (
       <div className="flex flex-col items-center justify-center h-96 space-y-4">
         <AlertCircle className="w-12 h-12 text-coral-500" />
         <h3 className="text-xl font-semibold text-white">Income data required</h3>
         <p className="text-slate-400 text-center max-w-md">
-          We need your income details to model your FIRE journey. Please go back to Step 1 and enter your annual income.
+          We need your income details to model your FIRE roadmap. Please go back and enter your annual income first.
         </p>
       </div>
     );
   }
 
-  const requiredSip = data.requiredMonthlySip >= 100000
-    ? `₹${(data.requiredMonthlySip / 100000).toFixed(2)}L`
-    : `₹${new Intl.NumberFormat('en-IN').format(Math.round(data.requiredMonthlySip))}`;
-  const targetCorpusCr = (data.requiredCorpus / 10000000).toFixed(2);
-
-  // Generate corpus data for chart
-  const corpusData = [];
-  const startingCorpusCr = (mfCorpus + ppfCorpus) / 10000000;
-  let current = startingCorpusCr;
-  let recommended = startingCorpusCr;
-  const currentSipCrYr = monthlySipCurrent * 12 / 10000000;
-  const recommendedSipCrYr = data.requiredMonthlySip * 12 / 10000000;
-
-  const chartEnd = Math.max(retireAge + 5, profile.age + 10);
-  for (let age = profile.age; age <= chartEnd; age++) {
-    corpusData.push({
-      age,
-      current: Number(current.toFixed(2)),
-      recommended: Number(recommended.toFixed(2)),
-    });
-    current = current * 1.12 + currentSipCrYr;
-    recommended = recommended * 1.12 + recommendedSipCrYr;
+  if (pipeline.isError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-96 space-y-4">
+        <AlertCircle className="w-12 h-12 text-coral-500" />
+        <h3 className="text-xl font-semibold text-white">FIRE analysis failed</h3>
+        <p className="text-slate-400 text-center max-w-md">{pipeline.error || 'An error occurred while building the FIRE pipeline.'}</p>
+        <button
+          onClick={() => pipeline.execute(fireInput)}
+          className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gold-500 text-navy-950 font-semibold hover:bg-gold-400 transition-colors"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Retry Analysis
+        </button>
+      </div>
+    );
   }
 
-  const sipAllocationData = data.sipAllocation.map((item: any) => ({
-    name: item.category,
-    value: item.percentage,
-    color: item.category === 'Large Cap' ? '#20B2AA' : item.category === 'Debt' ? '#FF6B6B' : '#D4AF37'
-  }));
+  if (!pipeline.isComplete) {
+    return (
+      <Loading
+        onComplete={() => undefined}
+        events={pipeline.events}
+        useRealAgents
+        pipeline={FIRE_LOADING_CONFIG}
+        layout="panel"
+      />
+    );
+  }
 
-  const retireYear = new Date().getFullYear() + (retireAge - profile.age);
-  const retireMonthName = ['January','February','March','April','May','June','July','August','September','October','November','December'][new Date().getMonth()];
+  if (!pipeline.result) {
+    return (
+      <div className="flex flex-col items-center justify-center h-96 space-y-4">
+        <AlertCircle className="w-12 h-12 text-coral-500" />
+        <h3 className="text-xl font-semibold text-white">No FIRE data returned</h3>
+        <p className="text-slate-400 text-center max-w-md">
+          The pipeline completed without a result payload. Retry the analysis to rebuild the roadmap.
+        </p>
+        <button
+          onClick={() => pipeline.execute(fireInput)}
+          className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gold-500 text-navy-950 font-semibold hover:bg-gold-400 transition-colors"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Retry Analysis
+        </button>
+      </div>
+    );
+  }
+
+  const data = normalizeFireResult(pipeline.result);
+  const sources = data.sources;
+  const actions = data.actions;
+  const timeline = data.timeline;
+  const firstYearPlan = data.firstYearMonthlyPlan;
 
   return (
-    <div className="space-y-8 max-w-6xl mx-auto">
-      <header className="flex items-center justify-between">
-        <div>
-          <h2 className="text-3xl font-bold text-white tracking-tight">FIRE Roadmap</h2>
-          <p className="text-slate-400 mt-1">Your path to Financial Independence, Retire Early.</p>
-        </div>
-      </header>
+    <AnimatePresence mode="wait">
+      <motion.div
+        key="fire-results"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.2 }}
+        className="space-y-8 max-w-6xl mx-auto"
+      >
+        <header className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-3xl font-bold text-white tracking-tight">FIRE Roadmap</h2>
+            <p className="text-slate-400 mt-1">Probability-based retirement planning with Monte Carlo output.</p>
+          </div>
+          <div className="px-4 py-2 bg-navy-800 rounded-full border border-navy-700 flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-sm font-medium text-slate-300">V2 Pipeline</span>
+          </div>
+        </header>
 
-      {/* Hero Metric */}
-      <div className="p-8 rounded-3xl bg-gradient-to-br from-navy-900 to-navy-800 border border-navy-700 text-center relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-gold-500 via-teal-500 to-coral-500" />
-        <h3 className="text-5xl font-bold text-white mb-4">
-          You can retire in <span className="text-gold-500">{retireMonthName} {retireYear}</span>
-        </h3>
-        <p className="text-lg text-slate-300">
-          Assuming <strong className="text-white">{requiredSip}/month</strong> SIP starting now, 12% equity returns, 6% inflation.
-        </p>
-        <p className="text-sm text-slate-500 mt-2">
-          Target monthly expense (today): {fmtCurrency(targetMonthlyDraw)} → Inflation-adjusted at retirement: {fmtCurrency(data.inflationAdjustedTarget)}
-        </p>
-        <p className="text-sm text-slate-500">
-          Target corpus: ₹{targetCorpusCr} Cr (3% safe withdrawal rate)
-        </p>
-      </div>
-
-      {/* Interactive Slider */}
-      <div className="p-6 rounded-2xl bg-navy-900 border border-navy-800">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold text-white">Target Retirement Age</h3>
-          <span className="text-2xl font-bold text-gold-500">{retireAge}</span>
+        <div className="p-8 rounded-3xl bg-gradient-to-br from-navy-900 to-navy-800 border border-navy-700 text-center relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-gold-500 via-teal-500 to-coral-500" />
+          <h3 className="text-4xl md:text-5xl font-bold text-white mb-4 leading-tight">
+            <span className="text-gold-500">{fmtPercent(data.successProbability)}</span> success probability
+          </h3>
+          <p className="text-lg text-slate-300 max-w-3xl mx-auto">
+            {data.roadmapHeadline}
+          </p>
+          {data.narrative && <p className="text-sm text-slate-400 mt-4 max-w-4xl mx-auto">{data.narrative}</p>}
+          <p className="text-xs text-slate-500 mt-4">
+            Monte Carlo target corpus: {fmtCurrency(data.targetCorpus)} | Macro snapshot: {data.macroAsOf || 'unavailable'} | Source mode: {data.macroSourceMode}
+          </p>
         </div>
-        <input
-          type="range"
-          min={sliderMin}
-          max={sliderMax}
-          value={retireAge}
-          onChange={(e) => setRetireAge(Number(e.target.value))}
-          className="w-full h-2 bg-navy-700 rounded-lg appearance-none cursor-pointer accent-gold-500"
-        />
-        <div className="flex justify-between text-sm text-slate-500 mt-2 font-mono">
-          <span>{sliderMin}</span>
-          <span>{Math.round((sliderMin + sliderMax) / 2)}</span>
-          <span>{sliderMax}</span>
-        </div>
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Corpus Growth Chart */}
-        <div className="lg:col-span-2 p-6 rounded-2xl bg-navy-900 border border-navy-800 flex flex-col">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-semibold text-white">Corpus Growth (₹ Crores)</h3>
-            <div className="flex items-center gap-4 text-xs font-medium">
-              <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-slate-500" /> Current SIP ({monthlySipCurrent > 0 ? fmtCurrency(monthlySipCurrent) + '/mo' : 'None'})</div>
-              <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-gold-500" /> Recommended Plan</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <MetricCard
+            label="Success Probability"
+            value={fmtPercent(data.successProbability)}
+            subtext={data.probabilityInterpretation || 'Probability, not guarantee'}
+          />
+          <MetricCard label="P10 Worst Case" value={fmtCurrency(data.p10Corpus)} subtext="Downside corpus at retirement" positive={false} />
+          <MetricCard label="P50 Median" value={fmtCurrency(data.p50Corpus)} subtext="Median retirement corpus" />
+          <MetricCard label="P90 Upside" value={fmtCurrency(data.p90Corpus)} subtext="Upper-range retirement corpus" />
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <SectionCard title="SIP Plan" icon={<Info className="w-4 h-4 text-slate-500" />}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+              <MiniTag label="Median SIP" value={fmtCurrency(data.medianSipRequired) + '/mo'} />
+              <MiniTag label="Safety SIP" value={fmtCurrency(data.safetySipRequired) + '/mo'} />
+              <MiniTag label="Current SIP" value={fmtCurrency(fireInput.monthlySipCurrent) + '/mo'} />
+              <MiniTag label="Step-up" value={`${firstYearPlan.length ? 'Included' : 'Annual'} | check roadmap`} />
             </div>
-          </div>
 
-          <div className="flex-1 h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={corpusData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <XAxis dataKey="age" stroke="#475569" tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                <YAxis stroke="#475569" tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px', color: '#f8fafc' }}
-                  itemStyle={{ color: '#f8fafc' }}
-                  formatter={(value: number) => [`₹${value} Cr`, '']}
-                  labelFormatter={(label) => `Age ${label}`}
-                />
-                <Line type="monotone" dataKey="current" stroke="#64748b" strokeWidth={2} strokeDasharray="5 5" dot={false} />
-                <Line type="monotone" dataKey="recommended" stroke="#D4AF37" strokeWidth={3} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* SIP Allocation */}
-        <div className="p-6 rounded-2xl bg-navy-900 border border-navy-800 flex flex-col">
-          <h3 className="text-lg font-semibold text-white mb-6">Monthly SIP Split</h3>
-          <div className="flex-1 h-48 relative">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={sipAllocationData}
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={5}
-                  dataKey="value"
-                >
-                  {sipAllocationData.map((entry: any, index: number) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} stroke="transparent" />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px', color: '#f8fafc' }}
-                  itemStyle={{ color: '#f8fafc' }}
-                  formatter={(value: number) => [`${value}%`, '']}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="absolute inset-0 flex items-center justify-center flex-col">
-              <span className="text-2xl font-bold text-white">{requiredSip}</span>
-              <span className="text-xs text-slate-400">Total SIP</span>
-            </div>
-          </div>
-          <div className="mt-6 space-y-3">
-            {sipAllocationData.map((item: any) => (
-              <div key={item.name} className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
-                  <span className="text-slate-300">{item.name}</span>
-                </div>
-                <span className="font-medium text-white">{item.value}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Asset Glidepath */}
-        <div className="p-6 rounded-2xl bg-navy-900 border border-navy-800 flex flex-col">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-semibold text-white">Asset Glidepath</h3>
-            <Info className="w-4 h-4 text-slate-500" />
-          </div>
-          <div className="flex-1 h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data.glidepath} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <XAxis dataKey="year" stroke="#475569" tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                <YAxis stroke="#475569" tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px', color: '#f8fafc' }}
-                  itemStyle={{ color: '#f8fafc' }}
-                />
-                <Area type="monotone" dataKey="equity" stackId="1" stroke="#20B2AA" fill="#20B2AA" fillOpacity={0.6} />
-                <Area type="monotone" dataKey="debt" stackId="1" stroke="#FF6B6B" fill="#FF6B6B" fillOpacity={0.6} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Insurance Gap */}
-        <div className="p-6 rounded-2xl bg-navy-900 border border-coral-500/50 flex flex-col relative overflow-hidden">
-          <div className="absolute top-0 right-0 p-4 opacity-10">
-            <ShieldAlert className="w-32 h-32 text-coral-500" />
-          </div>
-          <div className="relative z-10">
-            <div className="flex items-center gap-2 mb-4">
-              <ShieldAlert className="w-6 h-6 text-coral-500" />
-              <h3 className="text-xl font-bold text-white">
-                {data.insuranceGap > 0 ? 'Critical Insurance Gap' : 'Insurance Status'}
-              </h3>
-            </div>
-            <p className="text-slate-300 mb-6 leading-relaxed">
-              {data.insuranceGap > 0
-                ? 'Your declared life cover is below the recommended threshold for your income level and dependents.'
-                : 'Your life cover meets the recommended threshold. Review annually as income grows.'}
-            </p>
-
-            <div className="space-y-4">
-              <div className="flex justify-between items-end border-b border-navy-800 pb-2">
-                <span className="text-slate-400">Declared Life Cover</span>
-                <span className="text-xl font-mono text-white">
-                  {declaredLifeCover > 0 ? fmtCurrency(declaredLifeCover) : 'Not declared'}
-                </span>
-              </div>
-              <div className="flex justify-between items-end border-b border-navy-800 pb-2">
-                <span className="text-slate-400">Recommended (12× Income)</span>
-                <span className="text-xl font-mono text-white">{fmtCurrency(profile.income * 12)}</span>
-              </div>
-              <div className="flex justify-between items-end border-b border-navy-800 pb-2">
-                <span className="text-slate-400">Minimum Health Cover (2026)</span>
-                <span className="text-xl font-mono text-white">₹20L</span>
-              </div>
-              {data.insuranceGap > 0 && (
-                <div className="flex justify-between items-end pt-2">
-                  <span className="text-coral-500 font-medium">Life Cover Gap</span>
-                  <span className="text-2xl font-mono font-bold text-coral-500">{fmtCurrency(data.insuranceGap)}</span>
-                </div>
+            <div className="space-y-3">
+              {firstYearPlan.length > 0 ? (
+                firstYearPlan.slice(0, 6).map((entry) => (
+                  <div key={entry.month} className="flex items-center justify-between px-4 py-3 rounded-xl bg-navy-950/60 border border-navy-800">
+                    <div>
+                      <p className="text-sm text-slate-300">Month {entry.month}</p>
+                      <p className="text-xs text-slate-500">
+                        {entry.note || (entry.equity !== undefined && entry.debt !== undefined
+                          ? `${entry.equity}% equity / ${entry.debt}% debt`
+                          : 'Planned SIP contribution')}
+                      </p>
+                    </div>
+                    <p className="text-sm font-medium text-white font-mono">{fmtCurrency(entry.amount ?? entry.sip ?? 0)}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-slate-500">SIP glidepath details are not available in this response.</p>
               )}
             </div>
-          </div>
+          </SectionCard>
+
+          <SectionCard title="Macro Snapshot" icon={<Info className="w-4 h-4 text-slate-500" />}>
+            <div className="grid grid-cols-2 gap-3 mb-6">
+              <MiniTag label="As of" value={data.macroAsOf || 'Not provided'} />
+              <MiniTag label="Source mode" value={data.macroSourceMode || 'unknown'} />
+              <MiniTag label="Required life cover" value={fmtCurrency(data.requiredLifeCover || 0)} />
+              <MiniTag label="Declared cover" value={fmtCurrency(data.declaredLifeCover || 0)} />
+            </div>
+
+            <div className="space-y-3">
+              {sources.length > 0 ? (
+                sources.map((source, index) => (
+                  <div key={`${source.label}-${index}`} className="px-4 py-3 rounded-xl bg-navy-950/60 border border-navy-800">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm text-white font-medium">{source.label}</p>
+                        <p className="text-xs text-slate-500">{source.url || 'Source metadata provided by backend'}</p>
+                      </div>
+                      <p className="text-xs text-gold-500 font-mono">{source.retrievedAt || data.macroAsOf || 'n/a'}</p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-slate-500">No macro source breakdown returned.</p>
+              )}
+            </div>
+          </SectionCard>
         </div>
-      </div>
-    </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <SectionCard title="Probability Interpretation" icon={<Info className="w-4 h-4 text-slate-500" />}>
+            <p className="text-slate-300 leading-relaxed">
+              {data.probabilityInterpretation || 'The roadmap reflects probabilities derived from a Monte Carlo distribution, not guarantees.'}
+            </p>
+
+            <div className="grid grid-cols-3 gap-3 mt-6">
+              <MiniTag label="Iterations" value={data.iterations > 0 ? String(data.iterations) : 'n/a'} />
+              <MiniTag label="Seed" value={data.seed > 0 ? String(data.seed) : 'n/a'} />
+              <MiniTag label="Insurance gap" value={fmtCurrency(data.insuranceGap)} />
+            </div>
+
+            {data.shortfallAnalysis ? (
+              <div className="mt-6 p-4 rounded-xl bg-coral-500/10 border border-coral-500/20">
+                <p className="text-sm font-medium text-coral-300">Shortfall analysis</p>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm text-slate-300">
+                  <div>
+                    <p className="text-xs text-slate-500">Average shortfall</p>
+                    <p className="font-mono text-white">{fmtCurrency(data.shortfallAnalysis.averageShortfall || 0)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Average depletion age</p>
+                    <p className="font-mono text-white">{data.shortfallAnalysis.averageDepletionAge ? data.shortfallAnalysis.averageDepletionAge.toFixed(1) : 'n/a'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Failing scenarios</p>
+                    <p className="font-mono text-white">{data.shortfallAnalysis.failingSimulations ?? 'n/a'}</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </SectionCard>
+
+          <SectionCard
+            title={data.roadmapHeadline || 'Roadmap'}
+            icon={<ShieldAlert className="w-4 h-4 text-slate-500" />}
+          >
+            <p className="text-slate-300 leading-relaxed">{data.narrative || 'Roadmap details were not returned by the backend.'}</p>
+
+            <div className="space-y-3 mt-6">
+              {timeline.length > 0 ? (
+                timeline.map((item, index) => (
+                  <div key={`${item.title}-${index}`} className="px-4 py-3 rounded-xl bg-navy-950/60 border border-navy-800">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-gold-500/10 text-gold-500 flex items-center justify-center font-mono text-xs shrink-0">
+                        {index + 1}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm text-white font-medium">{item.title}</p>
+                        <p className="text-xs text-slate-500 mt-1">{item.detail}</p>
+                        {item.milestone && <p className="text-[10px] text-gold-500 mt-2">{item.milestone}</p>}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-slate-500">No roadmap actions were returned.</p>
+              )}
+            </div>
+
+            {actions.length > 0 && (
+              <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {actions.map((action, index) => (
+                    <div key={`${action.title}-${index}`} className="rounded-xl bg-navy-950/60 border border-navy-800 p-4">
+                      <p className="text-sm text-white font-medium">{action.title}</p>
+                    <p className="text-xs text-slate-500 mt-1">{action.detail || action.impact}</p>
+                    {action.impact && <p className="text-[10px] text-teal-500 mt-2">{action.impact}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <SectionCard title="Insurance Gap" icon={<ShieldAlert className="w-4 h-4 text-slate-500" />}>
+            <div className="space-y-4">
+              <div className="flex justify-between items-end border-b border-navy-800 pb-2">
+                <span className="text-slate-400">Required life cover</span>
+                <span className="text-xl font-mono text-white">{fmtCurrency(data.requiredLifeCover || 0)}</span>
+              </div>
+              <div className="flex justify-between items-end border-b border-navy-800 pb-2">
+                <span className="text-slate-400">Declared cover</span>
+                <span className="text-xl font-mono text-white">{fmtCurrency(data.declaredLifeCover || 0)}</span>
+              </div>
+              <div className="flex justify-between items-end border-b border-navy-800 pb-2">
+                <span className="text-slate-400">Life cover gap</span>
+                <span className={`text-xl font-mono ${data.insuranceGap > 0 ? 'text-coral-500' : 'text-emerald-500'}`}>
+                  {fmtCurrency(data.insuranceGap)}
+                </span>
+              </div>
+              <div className="flex justify-between items-end">
+                <span className="text-slate-400">Recommended health cover</span>
+                <span className="text-xl font-mono text-white">{fmtCurrency(data.recommendedHealthCover || 0)}</span>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Monte Carlo Summary" icon={<Loader2 className="w-4 h-4 text-slate-500" />}>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <MiniTag label="Target corpus" value={fmtCurrency(data.targetCorpus)} />
+                <MiniTag label="P10 / P50 / P90" value={`${fmtCurrency(data.p10Corpus)} | ${fmtCurrency(data.p50Corpus)} | ${fmtCurrency(data.p90Corpus)}`} />
+                <MiniTag label="Source mode" value={data.macroSourceMode || 'unknown'} />
+              </div>
+              <div className="p-4 rounded-xl bg-navy-950/60 border border-navy-800">
+                <p className="text-sm font-medium text-white">Compliance note</p>
+                <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                  {data.disclaimer}
+                </p>
+              </div>
+            </div>
+          </SectionCard>
+        </div>
+
+        <div className="mt-6 p-5 rounded-2xl bg-navy-900/50 border border-navy-800">
+          <div className="flex items-center gap-2 mb-3">
+            <ShieldAlert className="w-4 h-4 text-gold-500" />
+            <span className="text-xs font-bold uppercase tracking-wider text-gold-500">Mandatory Compliance Disclaimer</span>
+          </div>
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            This analysis is generated by ArthaGPT for educational purposes only. Monte Carlo outputs express probability, not certainty. Actual market conditions may differ materially from simulated scenarios. Please consult a qualified financial professional before making investment decisions.
+          </p>
+        </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }

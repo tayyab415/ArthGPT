@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Onboarding } from './components/Onboarding';
 import { Loading } from './components/Loading';
 import { Dashboard } from './components/Dashboard';
+import { AnalysisProvider } from './contexts/AnalysisContext';
 
 export interface UserProfile {
   age: number;
@@ -68,7 +69,9 @@ export default function App() {
         )}
         {step === 6 && (
           <motion.div key="dashboard" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <Dashboard profile={profile} setProfile={setProfile} />
+            <AnalysisProvider>
+              <Dashboard profile={profile} setProfile={setProfile} />
+            </AnalysisProvider>
           </motion.div>
         )}
       </AnimatePresence>

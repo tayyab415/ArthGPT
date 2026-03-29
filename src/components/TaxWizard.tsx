@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useMemo, useCallback, type Dispatch, type SetStateAction } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronDown, ChevronUp, CheckCircle2, AlertCircle, Info, TrendingUp, ShieldCheck, PiggyBank, Calculator, Loader2, BarChart3, Edit3 } from 'lucide-react';
+import { ChevronDown, ChevronUp, CheckCircle2, AlertCircle, Info, TrendingUp, ShieldCheck, PiggyBank, Calculator, Loader2, BarChart3, Edit3, Sparkles, Cpu } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { UserProfile } from '../App';
+import { useAnalysis } from '../contexts/AnalysisContext';
+import { type AgentEvent } from '../hooks/useSSE';
+import { AgentExecutionLog } from './AgentExecutionLog';
 
-// ── Client-side tax engine (mirrors server for instant reactivity) ──
+// ── Client-side tax engine (kept for instant reactivity during editing) ──
 interface TaxInput {
   baseSalary: number;
   hraReceived: number;
@@ -138,6 +141,10 @@ export function TaxWizard({ profile, setProfile }: { profile: UserProfile; setPr
   const [hraOpen, setHraOpen] = useState(false);
   const [slabOpen, setSlabOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [useAgentMode, setUseAgentMode] = useState(false);
+
+  // Tax pipeline hook for multi-agent execution
+  const { taxPipeline: pipeline } = useAnalysis();
 
   // Local editable tax inputs — initialised from profile
   const [taxInputs, setTaxInputs] = useState<TaxInput>({
@@ -160,6 +167,50 @@ export function TaxWizard({ profile, setProfile }: { profile: UserProfile; setPr
 
   // All calculation happens client-side (deterministic) — instant on every input change
   const data = useMemo(() => computeTax(taxInputs), [taxInputs]);
+
+  // Extract AI-generated narrative from pipeline result
+  const aiNarrative = useMemo(() => {
+    if (!pipeline.result) return null;
+    const result = pipeline.result as {
+      tax_optimization?: {
+        narrative?: string;
+        suggestions?: Array<{
+          instrument: string;
+          section: string;
+          maxBenefit: number;
+          lockIn: string;
+          riskLevel: string;
+          description: string;
+        }>;
+        missedDeductions?: Array<{
+          section: string;
+          missedAmount: number;
+          potentialSaving: number;
+          description: string;
+        }>;
+      };
+      compliant_narrative?: string;
+    };
+    return {
+      narrative: result.compliant_narrative || result.tax_optimization?.narrative,
+      suggestions: result.tax_optimization?.suggestions,
+      missedDeductions: result.tax_optimization?.missedDeductions,
+    };
+  }, [pipeline.result]);
+
+  // Run pipeline when agent mode is enabled
+  const runPipeline = useCallback(() => {
+    pipeline.execute({
+      baseSalary: taxInputs.baseSalary,
+      hraReceived: taxInputs.hraReceived,
+      rentPaid: taxInputs.rentPaid,
+      section80C: taxInputs.section80C,
+      section80CCD1B: taxInputs.section80CCD1B,
+      section80D: taxInputs.section80D,
+      homeLoanInterest: taxInputs.homeLoanInterest,
+      isMetro: taxInputs.isMetro,
+    });
+  }, [taxInputs, pipeline]);
 
   // Sync back to profile when inputs change
   const syncToProfile = useCallback(() => {
@@ -193,22 +244,75 @@ export function TaxWizard({ profile, setProfile }: { profile: UserProfile; setPr
 
   return (
     <div className="space-y-8 max-w-6xl mx-auto">
-      <header className="flex items-center justify-between">
+      <header className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h2 className="text-3xl font-bold text-white tracking-tight">Tax Wizard</h2>
           <p className="text-slate-400 mt-1">FY 2025-26 Regime Comparison & Optimisation.</p>
         </div>
-        <button
-          onClick={() => setEditMode(!editMode)}
-          className={cn(
-            "flex items-center gap-2 px-4 py-2 rounded-xl border transition-colors text-sm font-medium",
-            editMode ? "border-gold-500 text-gold-500 bg-gold-500/10" : "border-navy-700 text-slate-400 hover:text-slate-200 hover:border-navy-600"
-          )}
-        >
-          <Edit3 className="w-4 h-4" />
-          {editMode ? 'Done Editing' : 'Edit Salary Details'}
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Agent Mode Toggle */}
+          <button
+            onClick={() => {
+              if (!useAgentMode) {
+                setUseAgentMode(true);
+                runPipeline();
+              } else {
+                setUseAgentMode(false);
+              }
+            }}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2 rounded-xl border transition-colors text-sm font-medium",
+              useAgentMode 
+                ? "border-teal-500 text-teal-500 bg-teal-500/10" 
+                : "border-navy-700 text-slate-400 hover:text-slate-200 hover:border-navy-600"
+            )}
+            disabled={pipeline.isLoading}
+          >
+            {pipeline.isLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            {pipeline.isLoading ? 'Running...' : useAgentMode ? 'AI Analysis Active' : 'Run AI Analysis'}
+          </button>
+          <button
+            onClick={() => setEditMode(!editMode)}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2 rounded-xl border transition-colors text-sm font-medium",
+              editMode ? "border-gold-500 text-gold-500 bg-gold-500/10" : "border-navy-700 text-slate-400 hover:text-slate-200 hover:border-navy-600"
+            )}
+          >
+            <Edit3 className="w-4 h-4" />
+            {editMode ? 'Done Editing' : 'Edit Salary Details'}
+          </button>
+        </div>
       </header>
+
+      {/* Agent Execution Log */}
+      {useAgentMode && pipeline.events.length > 0 && (
+        <AgentExecutionLog events={pipeline.events} isLoading={pipeline.isLoading} />
+      )}
+
+      {/* AI-Generated Insights */}
+      {useAgentMode && aiNarrative?.narrative && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-6 rounded-2xl bg-gradient-to-r from-teal-500/10 to-blue-500/10 border border-teal-500/30"
+        >
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 rounded-full bg-teal-500/20 flex items-center justify-center shrink-0">
+              <Sparkles className="w-5 h-5 text-teal-500" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-lg font-semibold text-white mb-2">AI Tax Optimizer Insights</h3>
+              <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap">
+                {aiNarrative.narrative}
+              </p>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Editable Inputs Panel */}
       <AnimatePresence>
